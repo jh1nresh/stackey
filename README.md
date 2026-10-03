@@ -6,9 +6,11 @@ Stackey 是給人管理、給 agent 使用的資源錢包。使用者保管服�
 
 ## 目前狀態
 
-本機 CLI 已支援配對、Owner 核准、短期 DPoP session、能力探索、合成訂單唯讀、operation 查詢與撤銷。訂單來源明確為本機 `local_synthetic`；Supabase、密碼加密、助記詞、錢包 UI 和付款整合仍待實作。Repo 初始預設分支為 `spec`。
+本機 CLI 已支援配對、Owner 核准、短期 DPoP session、能力探索、合成訂單唯讀、operation 查詢與撤銷。訂單來源明確為本機 `local_synthetic`；CLI 另已支援助記詞保險箱、加密憑證、多錢包、備份復原與鎖定；Supabase／Vercel／Stripe 服務操作與錢包 UI 仍待驗收。Repo 初始預設分支為 `spec`。
 
 **唯一的現行產品規格：[docs/SPEC.md](docs/SPEC.md)。** 完整產品 API／資料模型大部分仍待實作；目前可執行範圍見 [配對格式](docs/CLI_PAIRING.md) 與 [核准／執行／撤銷步驟](docs/CLI_AUTHORIZATION.md)。
+
+本機保險箱與 seed-backed Owner：見 [CLI 保險箱指南](docs/CLI_VAULT.md)。舊配對 demo 沿用原 Owner，不自動遷移。
 
 ## 本機執行第一步
 

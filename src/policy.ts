@@ -7,7 +7,7 @@ import type { Store } from './store.js';
 
 export interface Grant {
   grant_id: string; pairing_id: string; principal: string; signed_grant: string;
-  created_at: number; expires_at: number; version: number; revoked_at: number | null;
+  created_at: number; expires_at: number; version: number; revoked_at: number | null; wallet_id: string;
 }
 export const seconds = () => Math.floor(Date.now() / 1000);
 export function denied(code: string, message: string): never {
@@ -36,9 +36,10 @@ async function ownerKey(store: Store) {
 }
 
 export async function approvePairing(store: Store, node: Identity, owner: Identity,
-  pairingId: string, principal: string, action: string, ttl: number, clock = seconds) {
+  pairingId: string, principal: string, action: string, ttl: number, clock = seconds, walletId = WALLET) {
   if (action !== ACTION) denied('action_not_available', 'Only demo.orders.read can be approved in this milestone.');
   if (!Number.isInteger(ttl) || ttl < 60 || ttl > 900) throw new AppError('invalid_ttl', 'Grant lifetime must be 60–900 seconds.');
+  if (!/^(wallet_demo|wallet_[0-9a-f-]{36})$/.test(walletId)) throw new AppError('invalid_wallet', 'Invalid wallet ID.');
   requireDemo(store);
   const pinned = await ownerKey(store);
   if (owner.id !== pinned.id) denied('owner_mismatch', 'Owner signer does not match this Node.');
@@ -46,7 +47,7 @@ export async function approvePairing(store: Store, node: Identity, owner: Identi
   if (!pairing || pairing.principal !== principal) denied('principal_mismatch', 'Pairing and full principal fingerprint must match.');
   const now = clock(); const grantId = randomUUID();
   const signed = await new SignJWT({ grant_id: grantId, pairing_id: pairingId, subject: principal,
-    wallet_id: WALLET, connection_id: CONNECTION, resource: RESOURCE, actions: [ACTION],
+    wallet_id: walletId, connection_id: CONNECTION, resource: RESOURCE, actions: [ACTION],
     policy_version: 1, delegation_allowed: false })
     .setProtectedHeader({ alg: 'EdDSA', typ: 'stackey-grant+jwt' }).setIssuer(owner.id)
     .setAudience(node.id).setSubject(principal).setIssuedAt(now).setExpirationTime(now + ttl)
@@ -62,12 +63,12 @@ export async function approvePairing(store: Store, node: Identity, owner: Identi
     if (store.db.prepare('SELECT 1 FROM grants WHERE pairing_id = ?').get(pairingId)) {
       throw new AppError('already_approved', 'This pairing already has a grant; create a new pairing for a new task.');
     }
-    store.db.prepare('INSERT INTO grants(grant_id, pairing_id, principal, signed_grant, created_at, expires_at, version) VALUES (?, ?, ?, ?, ?, ?, 1)')
-      .run(grantId, pairingId, principal, signed, now, now + ttl);
+    store.db.prepare('INSERT INTO grants(grant_id, pairing_id, principal, signed_grant, created_at, expires_at, version, wallet_id) VALUES (?, ?, ?, ?, ?, ?, 1, ?)')
+      .run(grantId, pairingId, principal, signed, now, now + ttl, walletId);
     event(store, 'grant_approved', principal, grantId, current);
   });
   return { grant_id: grantId, pairing_id: pairingId, principal, owner: owner.id,
-    wallet_id: WALLET, connection_id: CONNECTION, resource: RESOURCE, actions: [ACTION],
+    wallet_id: walletId, connection_id: CONNECTION, resource: RESOURCE, actions: [ACTION],
     expires_at: now + ttl, status: 'active', source: 'local_synthetic' };
 }
 
@@ -75,6 +76,12 @@ export function grantForPairing(store: Store, pairingId: string): Grant | undefi
   return store.db.prepare('SELECT * FROM grants WHERE pairing_id = ?').get(pairingId) as unknown as Grant | undefined;
 }
 export function requireGrant(store: Store, grantId: string, principal: string, now: number): Grant {
+  const vault = store.db.prepare("SELECT value FROM settings WHERE key='vault_dir'").get();
+  if (vault) {
+    const state = store.db.prepare("SELECT value FROM settings WHERE key='vault_unlocked'").get();
+    const expiry = store.db.prepare("SELECT value FROM settings WHERE key='vault_unlock_until'").get();
+    if (state?.value !== '1' || Number(expiry?.value ?? 0) <= now) throw new AppError('node_locked','Unlock the bound vault first.',403,3,'node_locked');
+  }
   const row = store.db.prepare('SELECT * FROM grants WHERE grant_id = ? AND principal = ?').get(grantId, principal) as unknown as Grant | undefined;
   if (!row) denied('permission_denied', 'No matching grant is available.');
   if (row.revoked_at !== null) denied('grant_revoked', 'Owner revoked this grant.');
@@ -91,7 +98,7 @@ export async function verifyGrant(store: Store, node: Identity, row: Grant, now:
     });
     if (payload.grant_id !== row.grant_id || payload.pairing_id !== row.pairing_id ||
       payload.subject !== row.principal || payload.iat !== row.created_at || payload.exp !== row.expires_at ||
-      payload.wallet_id !== WALLET || payload.connection_id !== CONNECTION || payload.resource !== RESOURCE ||
+      payload.wallet_id !== row.wallet_id || payload.connection_id !== CONNECTION || payload.resource !== RESOURCE ||
       payload.policy_version !== row.version || payload.delegation_allowed !== false ||
       JSON.stringify(payload.actions) !== JSON.stringify([ACTION])) throw new Error('Invalid grant binding');
   } catch { denied('invalid_grant', 'Owner grant could not be verified.'); }
