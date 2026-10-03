@@ -1,0 +1,24 @@
+# Local configuration and credential material
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.keystore
+*.sqlite
+*.sqlite-*
+*.db
+*.db-*
+.stackey/
+vault-data/
+backups/
+
+# Development and deployment outputs
+node_modules/
+.next/
+.vercel/
+dist/
+coverage/
+*.log
+.DS_Store
