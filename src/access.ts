@@ -1,3 +1,4 @@
+import { vaultRequest } from './vault-client.js';
 import { randomUUID } from 'node:crypto';
 import { calculateJwkThumbprint, decodeJwt, decodeProtectedHeader, importJWK, jwtVerify, SignJWT, type JWTPayload } from 'jose';
 import * as oauth from 'oauth4webapi';
@@ -117,6 +118,8 @@ export async function agentAction(store: Store, node: Identity, origin: string, 
       });
     }
     if (!grant) denied('permission_denied', 'Owner approval is required before requesting a session.');
+    const vault = store.db.prepare("SELECT value FROM settings WHERE key='vault_dir'").get();
+    if (vault) await vaultRequest(String(vault.value), 'status');
     requireGrant(store, grant.grant_id, input.principal, now);
     await verifyGrant(store, node, grant, now);
     requireDemo(store);
@@ -143,6 +146,8 @@ export async function agentAction(store: Store, node: Identity, origin: string, 
     request.path === '/v1/operations' && request.method === 'POST' ? 'run' :
     /^\/v1\/operations\/[0-9a-f-]{36}$/.test(request.path) && request.method === 'GET' ? 'operation' : undefined;
   if (!route) throw new AppError('route_not_available', 'Route is not available.', 404);
+  const vault = store.db.prepare("SELECT value FROM settings WHERE key='vault_dir'").get();
+  if (vault) await vaultRequest(String(vault.value), 'status');
   const input = await resource(store, node, origin, request, now);
   let operationId = ''; let inputHash = ''; let params;
   if (route === 'run') {
@@ -159,7 +164,7 @@ export async function agentAction(store: Store, node: Identity, origin: string, 
     const current = clock();
     consumeProof(store, input.proof, current);
     const grant = checkSession(store, input, current);
-    if (route === 'capabilities') return envelope('ok', { grant_id: grant.grant_id, capabilities: [ORDER_SCHEMA] });
+    if (route === 'capabilities') return envelope('ok', { grant_id: grant.grant_id, wallet_id: grant.wallet_id, capabilities: [ORDER_SCHEMA] });
     if (route === 'operation') operationId = request.path.split('/').at(-1)!;
     const previous = store.db.prepare('SELECT * FROM operations WHERE operation_id = ?').get(operationId);
     if (previous) {

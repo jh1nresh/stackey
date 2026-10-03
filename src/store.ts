@@ -67,6 +67,9 @@ export class Store {
         kind TEXT NOT NULL, subject TEXT NOT NULL, object_id TEXT NOT NULL, created_at INTEGER NOT NULL
       );
     `);
+    if (!this.db.prepare('PRAGMA table_info(grants)').all().some(row => row.name === 'wallet_id')) {
+      this.db.exec("ALTER TABLE grants ADD COLUMN wallet_id TEXT NOT NULL DEFAULT 'wallet_demo'");
+    }
   }
 
   transaction<T>(work: () => T): T {

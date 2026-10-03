@@ -1,6 +1,6 @@
-# Stackey 產品與技術規格 v0.8
+# Stackey 產品與技術規格 v0.9
 
-日期：2026-10-03。狀態：完整產品規格；本機 CLI 配對、Owner 核准、DPoP session、合成訂單操作與撤銷已有實作。本文作為現行產品契約；實際範圍與 wire format 見 [CLI_PAIRING.md](CLI_PAIRING.md) 與 [CLI_AUTHORIZATION.md](CLI_AUTHORIZATION.md)。本機操作為 `demo.orders.read`，資料來源 `local_synthetic`；Supabase adapter、雲端、加密、付款與完整 demo 仍待實作／驗證。
+日期：2026-10-03。狀態：完整產品規格；本機 CLI 配對、Owner 核准、DPoP session、合成訂單操作、撤銷，以及 seed-backed 保險箱、多錢包、加密憑證與備份復原已有實作。本文作為現行產品契約；實際範圍與 wire format 見 [CLI_PAIRING.md](CLI_PAIRING.md) 與 [CLI_AUTHORIZATION.md](CLI_AUTHORIZATION.md)。本機操作為 `demo.orders.read`，資料來源 `local_synthetic`；保險箱格式與操作見 [CLI_VAULT.md](CLI_VAULT.md)。Supabase adapter、雲端、付款與完整 demo 仍待實作／驗證。
 
 ## 1. 定位與問題
 

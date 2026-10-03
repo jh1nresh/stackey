@@ -1,6 +1,7 @@
 #!/usr/bin/env node
-import { existsSync } from 'node:fs';
-import { join, resolve } from 'node:path';
+import { existsSync, lstatSync, unlinkSync, rmdirSync } from 'node:fs';
+import { dirname, join, resolve } from 'node:path';
+import { tmpdir } from 'node:os';
 import { parseArgs } from 'node:util';
 import { connect, localStatus } from './client.js';
 import { AppError, envelope, publicError, record, textField } from './contracts.js';
@@ -12,8 +13,24 @@ import { capabilities, liveStatus, operation, runOrders } from './agent-client.j
 import { ACTION, CONNECTION, initializeDemo, ORDER_SCHEMA } from './orders.js';
 import { approvePairing, initializeOwner, revokeGrant, seconds } from './policy.js';
 
+import { backupVault, initializeVault, recovery, restoreVault } from './vault.js';
+import { unlockVault } from './vault-session.js';
+import { sessionPath, vaultRequest } from './vault-client.js';
+
 const help = `Stackey — local agent authorization demo
 
+  stackey vault init --recovery-out <new-private-file> [--vault-dir .stackey/vault]
+  stackey vault unlock --recovery-file <private-file> [--vault-dir ...] [--data-dir ...] [--ttl 900]
+  stackey vault status | lock [--vault-dir ...]
+  stackey vault recover-session [--vault-dir ...]
+  stackey vault backup --out <new-private-file> [--vault-dir ...]
+  stackey vault restore --backup-file <private-file> --recovery-file <private-file> [--vault-dir <new-dir>]
+  stackey wallet list | create --name <name> [--vault-dir ...]
+  stackey credential list --wallet <id> [--vault-dir ...]
+  stackey credential import --wallet <id> --name <name> --kind password|api_key|private_key --secret-file <private-JSON-file> [--vault-dir ...]
+  stackey credential remove <credential-id> [--vault-dir ...]
+  stackey connection list --wallet <id> [--vault-dir ...]
+  stackey connection add --wallet <id> --name <name> --provider demo|supabase|vercel|stripe --config-file <private-JSON-file> [--vault-dir ...]
   stackey node init [--data-dir .stackey/node]
   stackey node start [--data-dir .stackey/node] [--port 45820]
   stackey node invite --out <private-file> [--ttl 300] [--data-dir ...]
@@ -51,6 +68,9 @@ async function main() {
       live: { type: 'boolean' }, schema: { type: 'boolean' }, from: { type: 'string' }, to: { type: 'string' },
       cursor: { type: 'string' }, 'operation-id': { type: 'string' },
       'invite-file': { type: 'string' }, out: { type: 'string' },
+      'vault-dir': { type: 'string' }, 'recovery-out': { type: 'string' }, 'recovery-file': { type: 'string' },
+      'backup-file': { type: 'string' }, 'secret-file': { type: 'string' }, wallet: { type: 'string' },
+      kind: { type: 'string' }, provider: { type: 'string' }, 'config-file': { type: 'string' },
       port: { type: 'string' }, ttl: { type: 'string' }, name: { type: 'string' },
       after: { type: 'string' },
       json: { type: 'boolean' },
@@ -61,7 +81,60 @@ async function main() {
   const dataDir = resolve(values['data-dir'] ?? '.stackey/node');
   const stateDir = resolve(values['state-dir'] ?? '.stackey/agent');
   const ownerDir = resolve(values['owner-dir'] ?? '.stackey/owner');
+  const vaultDir = resolve(values['vault-dir'] ?? '.stackey/vault');
+  if (command === 'vault') {
+    if (positionals.length !== 2) throw new AppError('invalid_arguments', 'Use vault --help.');
+    const subcommand = positionals[1];
+    if (subcommand === 'init') { output(envelope('ok', await initializeVault(vaultDir, resolve(textField(values['recovery-out']))))); return; }
+    if (subcommand === 'unlock') {
+      const vault = await unlockVault(vaultDir, resolve(textField(values['recovery-file'])), dataDir, values.ttl === undefined ? 900 : Number(values.ttl));
+      output(envelope('ok', { status:'unlocked',vault_id:vault.vaultId,owner:vault.owner,expires_at:vault.expiresAt }));
+      const stop = () => { void vault.close().catch(error => { const safe=publicError(error); output(safe.body); process.exitCode=safe.exitCode; }); };
+      process.once('SIGINT',stop); process.once('SIGTERM',stop); return;
+    }
+    if (subcommand === 'status' || subcommand === 'lock') {
+      try { output(envelope('ok', await vaultRequest(vaultDir,subcommand))); }
+      catch(error) { if(error instanceof AppError && error.code==='node_locked') output(envelope('ok',{status:'locked'})); else throw error; }
+      return;
+    }
+    if (subcommand === 'backup') { output(envelope('ok',backupVault(vaultDir,resolve(textField(values.out))))); return; }
+    if (subcommand === 'restore') { output(envelope('ok',await restoreVault(vaultDir,resolve(textField(values['backup-file'])),await recovery(resolve(textField(values['recovery-file'])))))); return; }
+    if (subcommand === 'recover-session') {
+      const path=sessionPath(vaultDir); const state=record(readPrivateJson(path));
+      const pid=state.pid; if(!Number.isInteger(pid)||(pid as number)<=0) throw new AppError('invalid_session','Invalid session process.');
+      let alive=true; try { process.kill(pid as number,0); } catch(error) { alive=(error as NodeJS.ErrnoException).code!=='ESRCH'; }
+      if(alive) throw new AppError('session_active','Session process still exists; lock it first.');
+      const socket=textField(state.socket,100); const directory=dirname(socket);
+      if(!directory.startsWith(join(tmpdir(),'stackey-vault-'))||join(directory,'owner.sock')!==socket) throw new AppError('unsafe_session','Invalid session socket.');
+      const stat=lstatSync(directory); if(!stat.isDirectory()||stat.isSymbolicLink()||stat.uid!==process.getuid?.()||(stat.mode&0o077)!==0) throw new AppError('unsafe_session','Unsafe session directory.');
+      if(existsSync(socket)){ const socketStat=lstatSync(socket); if(!socketStat.isSocket()||socketStat.uid!==process.getuid?.()) throw new AppError('unsafe_session','Unsafe session socket.'); unlinkSync(socket); }
+      rmdirSync(directory); unlinkSync(path); output(envelope('ok',{status:'locked',stale_session_removed:true})); return;
+    }
+    throw new AppError('unknown_command','Use vault --help.');
+  }
+  if (['wallet','credential','connection'].includes(command ?? '')) {
+    const subcommand=positionals[1]; let args:Record<string,unknown>;
+    if(command==='wallet' && subcommand==='list') args={};
+    else if(command==='wallet' && subcommand==='create') args={name:textField(values.name,64)};
+    else if(command==='credential' && subcommand==='import') args={wallet_id:textField(values.wallet,64),name:textField(values.name,64),kind:textField(values.kind,32),value:textField(record(readPrivateJson(resolve(textField(values['secret-file'])))).value,16384)};
+    else if(command==='credential' && subcommand==='remove' && positionals.length===3) args={credential_id:textField(positionals[2],64)};
+    else if(subcommand==='list' && ['credential','connection'].includes(command!)) args={wallet_id:textField(values.wallet,64)};
+    else if(command==='connection' && subcommand==='add') args={wallet_id:textField(values.wallet,64),name:textField(values.name,64),provider:textField(values.provider,32),config:record(readPrivateJson(resolve(textField(values['config-file']))))};
+    else throw new AppError('unknown_command','Use --help for wallet commands.');
+    if(positionals.length!==(command==='credential' && subcommand==='remove'?3:2)) throw new AppError('invalid_arguments','Unexpected wallet arguments.');
+    if(subcommand==='list' && values.after!==undefined) args.after=textField(values.after,64);
+    output(envelope('ok',await vaultRequest(vaultDir,command+'.'+subcommand,args))); return;
+  }
   if (command === 'node') {
+    if (values['vault-dir'] && ['owner-init','approve','revoke','demo-init'].includes(positionals[1] ?? '')) {
+      const sub=positionals[1];
+      if (positionals.length !== (sub==='approve'||sub==='revoke'?3:2)) throw new AppError('invalid_arguments','Unexpected Node arguments.');
+      const args:Record<string,unknown>={_node_dir:dataDir};
+      const action=sub==='owner-init'?'node.bind':sub==='demo-init'?'demo.init':sub==='approve'?'grant.approve':'grant.revoke';
+      if(sub==='approve') Object.assign(args,{pairing_id:textField(positionals[2],36),principal:textField(values.principal,64),action:textField(values.action,64),ttl:values.ttl===undefined?900:Number(values.ttl),wallet_id:values.wallet??'wallet_demo'});
+      if(sub==='revoke') args.grant_id=textField(positionals[2],36);
+      output(envelope('ok',await vaultRequest(vaultDir,action,args))); return;
+    }
     const subcommand = positionals[1];
     if (positionals.length !== (subcommand === 'approve' || subcommand === 'revoke' ? 3 : 2)) {
       throw new AppError('invalid_arguments', 'Unexpected Node arguments; use --help.');
@@ -96,7 +169,7 @@ async function main() {
             if (!row) throw new AppError('invalid_cursor', 'Grant cursor was not found.');
             timestamp = row.created_at as number; id = row.grant_id as string;
           }
-          const rows = store.db.prepare(`SELECT grant_id, pairing_id, principal, created_at, expires_at, version,
+          const rows = store.db.prepare(`SELECT grant_id, pairing_id, principal, created_at, expires_at, version, wallet_id,
             CASE WHEN revoked_at IS NOT NULL THEN 'revoked' WHEN expires_at <= ? THEN 'expired' ELSE 'active' END AS status
             FROM grants WHERE (created_at, grant_id) > (?, ?) ORDER BY created_at, grant_id LIMIT 201`).all(seconds(), timestamp, id);
           const page = rows.slice(0, 200);
