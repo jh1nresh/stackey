@@ -39,7 +39,40 @@ export class Store {
         invitation_id TEXT NOT NULL UNIQUE REFERENCES invitations(id),
         proof_jti TEXT NOT NULL UNIQUE
       );
+      CREATE TABLE IF NOT EXISTS grants (
+        grant_id TEXT PRIMARY KEY, pairing_id TEXT NOT NULL UNIQUE REFERENCES pairings(pairing_id),
+        principal TEXT NOT NULL, signed_grant TEXT NOT NULL, created_at INTEGER NOT NULL,
+        expires_at INTEGER NOT NULL, version INTEGER NOT NULL,
+        revoked_at INTEGER, signed_revocation TEXT
+      );
+      CREATE TABLE IF NOT EXISTS challenges (
+        nonce TEXT PRIMARY KEY, expires_at INTEGER NOT NULL, consumed_at INTEGER
+      );
+      CREATE TABLE IF NOT EXISTS request_proofs (jti TEXT PRIMARY KEY, accepted_at INTEGER NOT NULL);
+      CREATE TABLE IF NOT EXISTS sessions (
+        session_id TEXT PRIMARY KEY, grant_id TEXT NOT NULL REFERENCES grants(grant_id),
+        principal TEXT NOT NULL, expires_at INTEGER NOT NULL, version INTEGER NOT NULL
+      );
+      CREATE TABLE IF NOT EXISTS demo_orders (
+        id TEXT PRIMARY KEY, created_at TEXT NOT NULL, currency TEXT NOT NULL,
+        amount_minor INTEGER NOT NULL, payment_status TEXT NOT NULL
+      );
+      CREATE TABLE IF NOT EXISTS operations (
+        operation_id TEXT PRIMARY KEY, grant_id TEXT NOT NULL REFERENCES grants(grant_id),
+        principal TEXT NOT NULL, input_hash TEXT NOT NULL, created_at INTEGER NOT NULL,
+        result_json TEXT NOT NULL
+      );
+      CREATE TABLE IF NOT EXISTS events (
+        sequence INTEGER PRIMARY KEY, event_id TEXT NOT NULL UNIQUE,
+        kind TEXT NOT NULL, subject TEXT NOT NULL, object_id TEXT NOT NULL, created_at INTEGER NOT NULL
+      );
     `);
+  }
+
+  transaction<T>(work: () => T): T {
+    this.db.exec('BEGIN IMMEDIATE');
+    try { const result = work(); this.db.exec('COMMIT'); return result; }
+    catch (error) { this.db.exec('ROLLBACK'); throw error; }
   }
 
   getEndpoint(): string {

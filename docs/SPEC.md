@@ -1,6 +1,6 @@
-# Stackey 產品與技術規格 v0.7
+# Stackey 產品與技術規格 v0.8
 
-日期：2026-10-03。狀態：完整產品規格；第一步本機 CLI 配對已有實作。本文作為現行產品契約；已實作範圍、接入 proof 與限制見 [CLI_PAIRING.md](CLI_PAIRING.md)。其餘指令、API、資料模型、付款與完整 demo 仍待實作／驗證。
+日期：2026-10-03。狀態：完整產品規格；本機 CLI 配對、Owner 核准、DPoP session、合成訂單操作與撤銷已有實作。本文作為現行產品契約；實際範圍與 wire format 見 [CLI_PAIRING.md](CLI_PAIRING.md) 與 [CLI_AUTHORIZATION.md](CLI_AUTHORIZATION.md)。本機操作為 `demo.orders.read`，資料來源 `local_synthetic`；Supabase adapter、雲端、加密、付款與完整 demo 仍待實作／驗證。
 
 ## 1. 定位與問題
 
@@ -161,7 +161,7 @@ Grant 示意，非完成的簽署 wire format：
 CLI 配一份短接入指南；讓 agent 知道何時用 Stackey、如何查 schema、等待核准與處理錯誤。操作少而明確，回傳限定資料，不把所有供應商 endpoints 包成工具。
 
 ```bash
-# 預定介面；目前無可執行 CLI
+# 完整產品介面；本機已實作 demo.orders.read，Supabase 操作仍待實作
 stackey connect <single-use-invitation> --json
 stackey status --json
 stackey capabilities --json
@@ -338,7 +338,7 @@ supabase/seed.sql         # Synthetic demo data only
 docs/SPEC.md              # Canonical product and architecture contract
 ```
 
-完整產品預定採 TypeScript、Node.js、Next.js、React、Supabase SDK、AI SDK、成熟密碼學／DPoP／MPP 函式庫。接入切片已使用 Node.js 22 原生 SQLite 與鎖定版本的 jose／TypeScript；尚未安裝雲端、MPP、DPoP session 或 vault 加密功能的依賴。
+完整產品預定採 TypeScript、Node.js、Next.js、React、Supabase SDK、AI SDK、成熟密碼學／DPoP／MPP 函式庫。接入切片已使用 Node.js 22 原生 SQLite 與鎖定版本的 jose／TypeScript；已採 oauth4webapi 3.8.8 生成／驗證 DPoP session 資源請求；尚未安裝雲端、MPP 或 vault 加密功能的依賴。
 
 | Milestone | 交付 | 驗證／解除下一階段條件 |
 | --- | --- | --- |
