@@ -6,9 +6,44 @@ Stackey 是給人管理、給 agent 使用的資源錢包。使用者保管服�
 
 ## 目前狀態
 
-規格階段。此 repo 包含產品需求、架構、介面契約、demo 與驗收計畫，尚無可執行 app、CLI 或付款整合。Repo 初始預設分支為 `spec`。
+第一步 CLI 接入已實作：本機 Node 初始化／啟動、限時一次性邀請、agent 公鑰持有證明、待核准請求持久化與本機狀態查詢。接入只回傳 `approval_required`，尚未實作 Grant、密碼保管、服務操作、錢包 UI 或付款整合。Repo 初始預設分支為 `spec`。
 
-**唯一的現行規格：[docs/SPEC.md](docs/SPEC.md)。** 規格內的 API、指令、資料表與資料夾皆為待實作設計。
+**唯一的現行產品規格：[docs/SPEC.md](docs/SPEC.md)。** 完整產品 API／資料模型大部分仍待實作；目前可執行範圍與接入格式見 [CLI 接入說明](docs/CLI_PAIRING.md)。
+
+## 本機執行第一步
+
+需要 macOS／Linux 與 Node.js 22.18 以上。使用 Node 原生 SQLite，Node 22 可能在 stderr 顯示 experimental warning。
+
+```bash
+npm ci
+npm run build
+npm run stackey -- node init
+npm run stackey -- node start
+```
+
+Node 保持前景執行；另開終端機，在同一 repo 執行：
+
+```bash
+npm run stackey -- node invite --out .stackey/invitation.json --ttl 300
+npm run stackey -- connect --invite-file .stackey/invitation.json --name "Local Agent"
+npm run stackey -- status
+npm run stackey -- node pairings
+```
+
+CLI 回傳待核准的 pairing ID 與公鑰指紋，`granted_actions` 為空。使用 Ctrl+C 停止 Node。`status` 讀取本機接入 receipt，沒有查詢即時服務權限。不同執行環境使用獨立 `--state-dir`；同 OS 使用者的目錄不構成強隔離。
+
+`node pairings` 每頁最多 200 筆；若 JSON 的 `data.next_cursor` 不為 `null`，執行 `node pairings --after <next_cursor>` 取得下一頁，直到 `null`。不會把截斷清單當成完整結果。
+
+原始 CLI JSON 輸出可用 `node dist/src/cli.js ...`，避免 npm 自身印出的 script 標頭。Invitation 檔案含一次性接入材料，預設 0600 且禁止覆寫；不可提交至 git。這一階段只允許 `http://127.0.0.1:<port>`，尚未驗證官方 Grok Bot 的雲端接入。
+
+## 驗證
+
+```bash
+npm run typecheck
+npm test
+```
+
+測試包含真實 CLI／HTTP 接入、一次性邀請的併發與重啟後重放、錯誤簽章、邀請／proof 綁定、過期、Node receipt 驗證、redirect 拒絕、請求限制，以及私鑰不出現在 CLI 結果中。
 
 ## 產品入口
 
