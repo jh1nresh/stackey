@@ -1,6 +1,6 @@
 # Stackey 產品與技術規格 v0.7
 
-日期：2026-10-03。狀態：待實作規格。本文整合既有產品討論，作為此 repo 的現行契約；任何指令、API、資料表、付款流程和驗收數據都不代表已實作或通過測試。
+日期：2026-10-03。狀態：完整產品規格；第一步本機 CLI 配對已有實作。本文作為現行產品契約；已實作範圍、接入 proof 與限制見 [CLI_PAIRING.md](CLI_PAIRING.md)。其餘指令、API、資料模型、付款與完整 demo 仍待實作／驗證。
 
 ## 1. 定位與問題
 
@@ -322,7 +322,7 @@ P1 延伸約 30–60 秒：錢包批准限定付款，Bot 呼叫固定付費分�
 
 ## 12. 預定 repo 結構與實作順序
 
-下列為未來結構，目前 repo 僅有 README、規格和 ignore 檔：
+下列為未來產品結構。目前接入切片使用根 package、`src/`、`test/` 與版本鎖定的 lockfile；尚未拆為各 apps／packages：
 
 ```text
 apps/web/                 # Next.js wallet dashboard + server endpoints
@@ -338,7 +338,7 @@ supabase/seed.sql         # Synthetic demo data only
 docs/SPEC.md              # Canonical product and architecture contract
 ```
 
-第一版採 TypeScript、Node.js、Next.js、React、Supabase SDK、AI SDK、成熟密碼學／DPoP／MPP 函式庫；安裝時核實相容版本並提交 lockfile。本階段沒有安裝依賴或固定不存在的 package 版本。
+完整產品預定採 TypeScript、Node.js、Next.js、React、Supabase SDK、AI SDK、成熟密碼學／DPoP／MPP 函式庫。接入切片已使用 Node.js 22 原生 SQLite 與鎖定版本的 jose／TypeScript；尚未安裝雲端、MPP、DPoP session 或 vault 加密功能的依賴。
 
 | Milestone | 交付 | 驗證／解除下一階段條件 |
 | --- | --- | --- |
