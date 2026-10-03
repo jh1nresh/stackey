@@ -62,12 +62,13 @@ export async function createIdentity(algorithm: 'EdDSA' | 'ES256'): Promise<Iden
   return { id: await calculateJwkThumbprint(publicJwk), publicJwk, privateJwk: await exportJWK(priv) };
 }
 
-export async function loadIdentity(dir: string, kind: 'node' | 'agent', create = false): Promise<Identity> {
+export async function loadIdentity(dir: string, kind: 'node' | 'agent' | 'owner', create = false): Promise<Identity> {
   const safeDir = privateDirectory(dir);
   const path = join(safeDir, 'identity.json');
-  const algorithm = kind === 'node' ? 'EdDSA' : 'ES256';
+  const algorithm = kind === 'agent' ? 'ES256' : 'EdDSA';
   if (!existsSync(path)) {
-    if (!create) throw new AppError('node_not_initialized', 'Initialize the Node first.');
+    if (!create) throw new AppError(kind === 'agent' ? 'agent_not_paired' : kind === 'owner' ? 'owner_not_initialized' : 'node_not_initialized',
+      kind === 'agent' ? 'Connect this agent state directory first.' : kind === 'owner' ? 'Initialize the owner signer first.' : 'Initialize the Node first.');
     const identity = await createIdentity(algorithm);
     writePrivateJson(path, identity);
     return identity;

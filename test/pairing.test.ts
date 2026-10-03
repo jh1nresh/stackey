@@ -8,7 +8,7 @@ import { join, resolve } from 'node:path';
 import { test, type TestContext } from 'node:test';
 import { importJWK, SignJWT } from 'jose';
 import { connect, localStatus } from '../src/client.js';
-import { AppError, digest, PROOF_TYPE, RECEIPT_TYPE } from '../src/contracts.js';
+import { AppError, digest, record, PROOF_TYPE, RECEIPT_TYPE } from '../src/contracts.js';
 import { createIdentity, loadIdentity, privateDirectory, publicKey } from '../src/identity.js';
 import { startNode } from '../src/node.js';
 import { acceptPairing, issueInvitation, makePairingProof, parseInvitation } from '../src/pairing.js';
@@ -95,7 +95,7 @@ test('invitation consumption and pending identity survive Node restart', async t
   t.after(() => restarted.close());
   const replay = await f.post(body);
   assert.equal(replay.status, 409);
-  assert.equal((await replay.json()).error.code, 'invitation_used');
+  assert.equal(record(record(await replay.json()).error).code, 'invitation_used');
   assert.equal(f.store.listPairings().pairings.length, 1);
 });
 
@@ -108,7 +108,7 @@ test('invalid signature does not consume the invitation', async t => {
     .setIssuedAt().setExpirationTime('30s').sign(await importJWK(attacker.privateJwk, 'ES256'));
   const denied = await f.post({ invitation: f.invitation.token, proof: forged });
   assert.equal(denied.status, 403);
-  assert.equal((await denied.json()).error.code, 'invalid_proof');
+  assert.equal(record(record(await denied.json()).error).code, 'invalid_proof');
   assert.equal(f.store.listPairings().pairings.length, 0);
   const valid = await f.post({ invitation: f.invitation.token, proof: f.request.proof });
   assert.equal(valid.status, 201); await valid.arrayBuffer();
@@ -151,7 +151,7 @@ test('expired invitations are refused by CLI and Node', async t => {
   await assert.rejects(parseInvitation(f.encoded, now), error => error instanceof AppError && error.code === 'invalid_invitation');
   const response = await f.post({ invitation: f.invitation.token, proof: f.request.proof });
   assert.equal(response.status, 403);
-  assert.equal((await response.json()).error.code, 'invalid_invitation');
+  assert.equal(record(record(await response.json()).error).code, 'invalid_invitation');
   assert.equal(f.store.listPairings().pairings.length, 0);
 });
 
@@ -215,7 +215,7 @@ test('proof replay with a different valid invitation is rejected durably', async
     .setIssuedAt(now).setExpirationTime(now + 30).sign(await importJWK(f.agent.privateJwk, 'ES256'));
   const response = await f.post({ invitation: invitation.token, proof });
   assert.equal(response.status, 409);
-  assert.equal((await response.json()).error.code, 'proof_replayed');
+  assert.equal(record(record(await response.json()).error).code, 'proof_replayed');
   assert.equal(f.store.listPairings().pairings.length, 1);
 });
 
@@ -258,7 +258,7 @@ test('malformed requests, browser requests, service and management routes never 
     body: JSON.stringify({ invitation: f.invitation.token, proof: f.request.proof }),
   });
   assert.equal(browser.status, 403); await browser.arrayBuffer();
-  for (const path of ['/v1/sessions', '/v1/operations', '/v1/grants', '/admin/unlock']) {
+  for (const path of ['/v1/grants', '/admin/unlock', '/admin/approve']) {
     const response = await fetch(f.node.endpoint + path, { method: 'POST' });
     assert.equal(response.status, 404); await response.arrayBuffer();
   }

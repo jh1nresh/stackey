@@ -65,7 +65,7 @@ export async function connect(invitation: string, dir: string, name: string) {
   try { writePrivateJson(receiptPath, pairing); }
   catch { throw new AppError('receipt_not_saved', 'Node accepted the pairing, but local state could not be saved. Check its pairing list.', 500, 4, 'result_unknown'); }
   return envelope('approval_required', {
-    ...pairing, granted_actions: [], next_step: 'Ask the owner to review this public-key fingerprint. Approval is not implemented in this milestone.',
+    ...pairing, granted_actions: [], next_step: 'Ask the owner to approve this full public-key fingerprint; use status --live to check the current grant.',
   });
 }
 
@@ -82,6 +82,6 @@ export async function localStatus(dir: string) {
     pairing_id: textField(value.pairing_id, 64), principal: identity.id,
     node_id: textField(value.node_id, 64), display_name: textField(value.display_name, 64),
     granted_actions: [], source: 'local_pairing_receipt',
-    next_step: 'No service access is available. Owner approval is a later milestone.',
+    next_step: 'This is a local pairing receipt. Use status --live to check current owner approval and service access.',
   });
 }

@@ -1,6 +1,6 @@
 # 第一步：本機 CLI 接入
 
-日期：2026-10-03。範圍：agent 提交一個可驗證的接入請求，Node 保存為待核准。沒有服務權限或供應商憑證，不代表完整 Vault 或遠端 Grok Bot 整合完成。
+日期：2026-10-03。範圍：agent 提交一個可驗證的接入請求，Node 保存為待核准。這份文件描述初次 pending 配對；後續本機核准／合成訂單操作見 [CLI_AUTHORIZATION.md](CLI_AUTHORIZATION.md)，不代表完整 Vault 或遠端 Grok Bot 整合完成。
 
 ## 契約與實際結構
 
@@ -46,10 +46,10 @@ Owner 的 `node pairings` 以建立時間及 pairing ID 穩定排序，每頁最
 
 HTTP 只允許 literal loopback endpoint，拒絕 DNS localhost、其他 host／protocol、URL credentials、額外 path／query／fragment 和 redirect。公開 HTTPS、TLS／Node pinning 的遠端部署與官方 Grok Bot 執行尚未完成。
 
-Node 限制 JSON body 16 KiB、最多 30 次配對路由請求／分鐘，並拒絕 browser Origin。回應禁止 cache，不開放跨來源、session、Grant、operation 或管理端點。這些只保護目前的接入切片，不能當成 production auth／vault 安全認證。
+Node 限制 JSON body 16 KiB、最多 30 次配對路由請求／分鐘，並拒絕 browser Origin。回應禁止 cache，配對入口不提供服務授權或管理能力，不開放跨來源。這些說明限配對入口；新增 session／operation 路由及其獨立 proof 見 [CLI_AUTHORIZATION.md](CLI_AUTHORIZATION.md)，不能當成 production auth／vault 安全認證。
 
 ## 驗證與下一步
 
-驗收需要 `npm run typecheck`、`npm test` 和真實 CLI 的 pending 接入；測試確認無效 proof 不消耗 invitation、併發只接受一次、重啟保留狀態、另一把 Node key 的 receipt 無法確認接入、redirect 不轉送配對材料，且未開放服務／管理路由。
+驗收需要 `npm run typecheck`、`npm test` 和真實 CLI 的 pending 接入；測試確認無效 proof 不消耗 invitation、併發只接受一次、重啟保留狀態、另一把 Node key 的 receipt 無法確認接入、redirect 不轉送配對材料，且未授權服務請求及 HTTP 管理路由被拒絕。
 
-下一步才是可信 Owner 核准、正式 Grant／DPoP session、撤銷與一個 Supabase adapter。密碼加密／助記詞、備份、錢包 UI、雲端服務與付款均不在本切片。
+本機 Owner 核准、Grant／DPoP session 與撤銷已在第二步加入；Supabase adapter 仍待實作。密碼加密／助記詞、備份、錢包 UI、雲端服務與付款均不在本切片。

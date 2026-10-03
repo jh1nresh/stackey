@@ -4,15 +4,22 @@
   "private": true,
   "type": "module",
   "description": "Local agent pairing foundation for Stackey",
-  "bin": { "stackey": "dist/src/cli.js" },
-  "engines": { "node": ">=22.18.0" },
+  "bin": {
+    "stackey": "dist/src/cli.js"
+  },
+  "engines": {
+    "node": ">=22.18.0"
+  },
   "scripts": {
     "build": "tsc",
     "typecheck": "tsc --noEmit",
     "test": "npm run build && node --test dist/test/*.test.js",
     "stackey": "node dist/src/cli.js"
   },
-  "dependencies": { "jose": "6.2.12" },
+  "dependencies": {
+    "jose": "6.2.12",
+    "oauth4webapi": "3.8.8"
+  },
   "devDependencies": {
     "@types/node": "22.20.5",
     "typescript": "5.9.3"

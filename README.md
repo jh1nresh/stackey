@@ -6,9 +6,9 @@ Stackey 是給人管理、給 agent 使用的資源錢包。使用者保管服�
 
 ## 目前狀態
 
-第一步 CLI 接入已實作：本機 Node 初始化／啟動、限時一次性邀請、agent 公鑰持有證明、待核准請求持久化與本機狀態查詢。接入只回傳 `approval_required`，尚未實作 Grant、密碼保管、服務操作、錢包 UI 或付款整合。Repo 初始預設分支為 `spec`。
+本機 CLI 已支援配對、Owner 核准、短期 DPoP session、能力探索、合成訂單唯讀、operation 查詢與撤銷。訂單來源明確為本機 `local_synthetic`；Supabase、密碼加密、助記詞、錢包 UI 和付款整合仍待實作。Repo 初始預設分支為 `spec`。
 
-**唯一的現行產品規格：[docs/SPEC.md](docs/SPEC.md)。** 完整產品 API／資料模型大部分仍待實作；目前可執行範圍與接入格式見 [CLI 接入說明](docs/CLI_PAIRING.md)。
+**唯一的現行產品規格：[docs/SPEC.md](docs/SPEC.md)。** 完整產品 API／資料模型大部分仍待實作；目前可執行範圍見 [配對格式](docs/CLI_PAIRING.md) 與 [核准／執行／撤銷步驟](docs/CLI_AUTHORIZATION.md)。
 
 ## 本機執行第一步
 
@@ -30,7 +30,7 @@ npm run stackey -- status
 npm run stackey -- node pairings
 ```
 
-CLI 回傳待核准的 pairing ID 與公鑰指紋，`granted_actions` 為空。使用 Ctrl+C 停止 Node。`status` 讀取本機接入 receipt，沒有查詢即時服務權限。不同執行環境使用獨立 `--state-dir`；同 OS 使用者的目錄不構成強隔離。
+首次接入回傳待核准的 pairing ID 與公鑰指紋，`granted_actions` 為空。核准與執行請接著使用 [第二步操作指南](docs/CLI_AUTHORIZATION.md)。使用 Ctrl+C 停止 Node。`status` 讀取本機接入 receipt，沒有查詢即時服務權限。不同執行環境使用獨立 `--state-dir`；同 OS 使用者的目錄不構成強隔離。
 
 `node pairings` 每頁最多 200 筆；若 JSON 的 `data.next_cursor` 不為 `null`，執行 `node pairings --after <next_cursor>` 取得下一頁，直到 `null`。不會把截斷清單當成完整結果。
 
@@ -43,7 +43,7 @@ npm run typecheck
 npm test
 ```
 
-測試包含真實 CLI／HTTP 接入、一次性邀請的併發與重啟後重放、錯誤簽章、邀請／proof 綁定、過期、Node receipt 驗證、redirect 拒絕、請求限制，以及私鑰不出現在 CLI 結果中。
+測試包含 Owner 核准、雙 agent 隔離、訂單正確、DPoP session／撤銷、operation／分頁及真實 CLI／HTTP 接入、一次性邀請的併發與重啟後重放、錯誤簽章、邀請／proof 綁定、過期、Node receipt 驗證、redirect 拒絕、請求限制，以及私鑰不出現在 CLI 結果中。
 
 ## 產品入口
 
