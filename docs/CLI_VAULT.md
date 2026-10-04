@@ -45,7 +45,7 @@ node dist/src/cli.js credential list --wallet wallet_demo
 node dist/src/cli.js credential remove CREDENTIAL_ID
 ```
 
-種類為 `password`、`api_key`、`private_key`。清單與匯入結果只回傳 ID、wallet、名称與種類；没有秘密匯出或通用簽章命令。輸入檔案不會自動刪除，Owner 自行管理其保管。這是保管功能，尚不代表任意網站可自動登入。
+種類為 `password`、`api_key`、`private_key`、`website_login`。清單與匯入結果只回傳 ID、wallet、名称與種類；没有秘密匯出或通用簽章命令。輸入檔案不會自動刪除，Owner 自行管理其保管。`password` 仍是保管項目；網站自動登入是獨立的 `website` connection + `website.session.login` Grant，預設拒絕真實瀏覽器自動化。契約與威脅模型見 [WEBSITE_LOGIN.md](WEBSITE_LOGIN.md)。
 
 錢包、憑證和 connection 清單每頁 100 筆。當 `next_cursor` 非 null，使用 `--after NEXT_CURSOR` 取得下一頁，直到 `complete: true`。
 

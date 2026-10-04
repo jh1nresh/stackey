@@ -8,8 +8,8 @@ import { AppError, displayName, record, textField } from './contracts.js';
 import { privateDirectory, readPrivateJson, writePrivateJson, type Identity } from './identity.js';
 
 export interface Wallet { id: string; name: string; connections: string[] }
-export interface Credential { id: string; wallet_id: string; name: string; kind: 'password' | 'api_key' | 'private_key'; value: string }
-export interface Connection { id: string; wallet_id: string; provider: 'demo' | 'supabase' | 'vercel' | 'stripe'; name: string; config: Record<string, unknown> }
+export interface Credential { id: string; wallet_id: string; name: string; kind: 'password' | 'api_key' | 'private_key' | 'website_login'; value: string }
+export interface Connection { id: string; wallet_id: string; provider: 'demo' | 'supabase' | 'vercel' | 'stripe' | 'website'; name: string; config: Record<string, unknown> }
 export interface VaultRequest { request_id: string; fingerprint: string; result: Record<string, unknown> }
 export interface VaultData { wallets: Wallet[]; credentials: Credential[]; connections: Connection[]; requests: VaultRequest[] }
 export const VAULT_REQUESTS_CAP = 3000;
@@ -73,12 +73,12 @@ function validateData(raw: unknown): VaultData {
   });
   const credentials = value.credentials.map(raw => {
     const c=record(raw); exact(c,['id','wallet_id','name','kind','value']);
-    if (!['password','api_key','private_key'].includes(String(c.kind))) fail();
+    if (!['password','api_key','private_key','website_login'].includes(String(c.kind))) fail();
     return { id:id(c.id),wallet_id:id(c.wallet_id),name:displayName(c.name),kind:c.kind as Credential['kind'],value:textField(c.value,16384) };
   });
   const connections = value.connections.map(raw => {
     const c=record(raw); exact(c,['id','wallet_id','provider','name','config']);
-    if (!['demo','supabase','vercel','stripe'].includes(String(c.provider))) fail();
+    if (!['demo','supabase','vercel','stripe','website'].includes(String(c.provider))) fail();
     return { id:id(c.id),wallet_id:id(c.wallet_id),provider:c.provider as Connection['provider'],name:displayName(c.name),config:record(c.config) };
   });
   const requests = value.requests===undefined ? [] : (() => {
