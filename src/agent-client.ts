@@ -5,6 +5,7 @@ import * as oauth from 'oauth4webapi';
 import { BOOTSTRAP_TYPE, issuer, isUuid, RESPONSE_TYPE } from './access.js';
 import { AppError, digest, endpoint, record, textField } from './contracts.js';
 import { loadIdentity, publicKey, readPrivateJson, type Identity } from './identity.js';
+import { providerAction, providerParams } from './providers.js';
 import { ACTION, orderParams } from './orders.js';
 
 export async function agentContext(dir: string) {
@@ -131,9 +132,9 @@ export async function capabilities(dir: string) {
   return resourceRequest(context, await session(context), 'GET', '/v1/capabilities');
 }
 export async function runOrders(dir: string, action: string, input: unknown, operationId: string = randomUUID()) {
-  if (action !== ACTION) throw new AppError('action_not_available', 'Only demo.orders.read is implemented.');
+  if (action !== ACTION && !providerAction(action)) throw new AppError('action_not_available', 'Unsupported action.');
   if (!isUuid(operationId)) throw new AppError('invalid_operation_id', 'Use a UUID operation ID.');
-  const params = orderParams(input);
+  const params = action === ACTION ? orderParams(input) : providerParams(action, input);
   const context = await agentContext(dir);
   const token = await session(context);
   try {
@@ -141,7 +142,7 @@ export async function runOrders(dir: string, action: string, input: unknown, ope
       JSON.stringify({ operation_id: operationId, action, params }));
   } catch (error) {
     if (error instanceof AppError && error.exitCode === 4) {
-      throw new AppError('operation_result_unknown', `Read result could not be confirmed. Use operation ${operationId} to check this same request.`, 503, 4, 'result_unknown');
+      throw new AppError('operation_result_unknown', `Operation result could not be confirmed. Use operation ${operationId} to check this same request.`, 503, 4, 'result_unknown');
     }
     throw error;
   }

@@ -7,6 +7,7 @@ import { publicKey, type Identity } from './identity.js';
 import { ACTION, ORDER_SCHEMA, orderParams, readOrders, requireDemo } from './orders.js';
 import { consumeProof, denied, event, grantForPairing, proofTime, requireGrant, verifyGrant,
   type Grant, type ProofTime } from './policy.js';
+import { dispatchProviderOperation } from './provider-operations.js';
 import type { Store } from './store.js';
 
 export const BOOTSTRAP_TYPE = 'stackey-request+jwt';
@@ -78,7 +79,7 @@ function checkSession(store: Store, input: VerifiedRequest, now: number): Grant 
       row.version !== grant.version || (row.expires_at as number) <= now ||
       (session.exp as number) <= now || session.grant_version !== grant.version ||
       grant.signed_grant !== input.grant!.signed_grant) denied('invalid_session', 'Session is expired or no longer authorized.');
-  requireDemo(store);
+  if (grant.action === ACTION) requireDemo(store);
   return grant;
 }
 
@@ -114,7 +115,7 @@ export async function agentAction(store: Store, node: Identity, origin: string, 
         }
         return envelope(status, { pairing_id: pairingId, principal: input.principal,
           grant_id: current?.grant_id ?? null, expires_at: current?.expires_at ?? null,
-          granted_actions: status === 'active' ? [ACTION] : [], source: 'live_node' });
+          granted_actions: status === 'active' ? [current!.action] : [], source: 'live_node' });
       });
     }
     if (!grant) denied('permission_denied', 'Owner approval is required before requesting a session.');
@@ -122,7 +123,7 @@ export async function agentAction(store: Store, node: Identity, origin: string, 
     if (vault) await vaultRequest(String(vault.value), 'status');
     requireGrant(store, grant.grant_id, input.principal, now);
     await verifyGrant(store, node, grant, now);
-    requireDemo(store);
+    if (grant.action === ACTION) requireDemo(store);
     const sessionId = randomUUID();
     const expires = Math.min(now + 60, grant.expires_at);
     const token = await new SignJWT({ client_id: input.principal, cnf: { jkt: input.principal },
@@ -149,6 +150,9 @@ export async function agentAction(store: Store, node: Identity, origin: string, 
   const vault = store.db.prepare("SELECT value FROM settings WHERE key='vault_dir'").get();
   if (vault) await vaultRequest(String(vault.value), 'status');
   const input = await resource(store, node, origin, request, now);
+  if (input.grant!.action !== ACTION) {
+    return dispatchProviderOperation(store, node, request, input.principal, input.proof, () => checkSession(store, input, clock()), clock);
+  }
   let operationId = ''; let inputHash = ''; let params;
   if (route === 'run') {
     const body = record(JSON.parse(request.rawBody));

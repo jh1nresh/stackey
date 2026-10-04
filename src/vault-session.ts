@@ -6,9 +6,11 @@ import { join, resolve } from 'node:path';
 import { AppError, displayName, publicError, record, textField } from './contracts.js';
 import { loadIdentity, readPrivateJson, writePrivateJson } from './identity.js';
 import { initializeDemo } from './orders.js';
-import { approvePairing, initializeOwner, revokeGrant, seconds } from './policy.js';
+import { approvePairing, initializeOwner, requireGrant, revokeGrant, seconds, verifyGrant } from './policy.js';
 import { Store } from './store.js';
 import { openVault, recovery, type Connection, type Credential } from './vault.js';
+import { connectionConfig, executeProvider, integer, providerParams, supports } from './providers.js';
+import { payMpp, type PaymentContinuation } from './mpp-payment.js';
 import { sessionPath } from './vault-client.js';
 
 export interface RunningVault { server:Server;vaultId:string;owner:string;expiresAt:number;close():Promise<void> }
@@ -34,7 +36,7 @@ export async function unlockVault(dir:string,recoveryFile:string,nodeDir:string,
   const save=()=>vault.save(vault.data);
   async function execute(command:string,args:Record<string,unknown>) {
     if(closing || clock()>=expiresAt)throw new AppError('node_locked','Vault unlock expired.',403,3,'node_locked');
-    if (['node.bind','grant.approve','grant.revoke','demo.init'].includes(command)) {
+    if (['node.bind','grant.approve','grant.revoke','demo.init','provider.execute'].includes(command)) {
       if(args._node_dir!==configuredNodeDir) throw new AppError('node_mismatch','CLI Node directory differs from the unlocked vault session.');
       args={...args};delete args._node_dir;
     }
@@ -61,9 +63,34 @@ export async function unlockVault(dir:string,recoveryFile:string,nodeDir:string,
     if(command==='connection.add') {
       exact(['wallet_id','name','provider','config']);const w=wallet(args.wallet_id);
       if(!['demo','supabase','vercel','stripe'].includes(String(args.provider)))throw new AppError('invalid_provider','Use a supported provider.');
-      const value:Connection={id:'connection_'+randomUUID(),wallet_id:w.id,name:displayName(args.name),provider:args.provider as Connection['provider'],config:record(args.config)};
+      const value:Connection={id:'connection_'+randomUUID(),wallet_id:w.id,name:displayName(args.name),provider:args.provider as Connection['provider'],config:connectionConfig(args.provider as Connection['provider'],args.config,vault.data,w.id)};
       vault.data.connections.push(value);w.connections.push(value.id);try{save();}catch(error){vault.data.connections.pop();w.connections.pop();throw error;}
       const {config,...metadata}=value;return metadata;
+    }
+    if(command==='provider.execute') {
+      exact(['grant_id','principal','action','params','operation_id'],['previous']);
+      if(!bound)throw new AppError('owner_not_initialized','Bind this vault first.');
+      const store=new Store(configuredNodeDir);
+      try {
+        const node=await loadIdentity(configuredNodeDir,'node');
+        const grant=requireGrant(store,textField(args.grant_id,36),textField(args.principal,64),clock());
+        await verifyGrant(store,node,grant,clock());
+        const check=()=>{
+          if(closing||clock()>=expiresAt)throw new AppError('node_locked','Vault is locked.',403,3,'node_locked');
+          const current=requireGrant(store,grant.grant_id,grant.principal,clock());
+          const accepted=store.db.prepare('SELECT * FROM provider_operations WHERE operation_id=?').get(textField(args.operation_id,36));
+          if(current.version!==grant.version||current.signed_grant!==grant.signed_grant||current.action!==args.action||!accepted||accepted.grant_id!==grant.grant_id||accepted.state!=='executing')throw new AppError('permission_denied','Operation no longer matches its grant.',403,3,'permission_denied');
+        };
+        check();
+        const connection=vault.data.connections.find(c=>c.id===grant.connection_id&&c.wallet_id===grant.wallet_id&&supports(c,grant.action));
+        if(!connection)throw new AppError('connection_unavailable','Granted connection is unavailable.');
+        connectionConfig(connection.provider,connection.config,vault.data,grant.wallet_id);
+        const credential=vault.data.credentials.find(c=>c.id===connection.config.credential_id&&c.wallet_id===grant.wallet_id)!;
+        const params=providerParams(grant.action,args.params);
+        if(grant.action==='stripe.mpp.pay')return await payMpp(connection,credential.value,textField(args.operation_id,36),grant.max_amount_minor,check,args.previous as PaymentContinuation|undefined);
+        check();const result=await executeProvider(connection,grant.action,params,credential.value);check();
+        return {state:'completed',result};
+      } finally {store.close();}
     }
     if(command==='node.bind') {
       exact([]);const node=await loadIdentity(configuredNodeDir,'node');const store=new Store(configuredNodeDir);
@@ -84,7 +111,13 @@ export async function unlockVault(dir:string,recoveryFile:string,nodeDir:string,
       try {
         if(command==='demo.init'){exact([]);initializeDemo(store);return {source:'local_synthetic',rows:21};}
         if(command==='grant.revoke'){exact(['grant_id']);return await revokeGrant(store,node,vault.owner,textField(args.grant_id,36),clock);}
-        exact(['pairing_id','principal','action','ttl','wallet_id']);const w=wallet(args.wallet_id);
+        exact(['pairing_id','principal','action','ttl','wallet_id'],['connection_id','max_calls','max_amount_minor']);const w=wallet(args.wallet_id);
+        if(args.action!=='demo.orders.read'){
+          const connection=vault.data.connections.find(c=>c.id===args.connection_id&&c.wallet_id===w.id&&supports(c,String(args.action)));
+          if(!connection)throw new AppError('connection_unavailable','Select a matching connection in this wallet.');
+          connectionConfig(connection.provider,connection.config,vault.data,w.id);
+          return await approvePairing(store,node,vault.owner,textField(args.pairing_id,36),textField(args.principal,64),textField(args.action,64),Number(args.ttl),clock,w.id,{connection_id:connection.id,max_calls:integer(args.max_calls??1,1,100),max_amount_minor:integer(args.max_amount_minor??0,0,10000)});
+        }
         if(!vault.data.connections.some(c=>c.wallet_id===w.id&&c.provider==='demo'))throw new AppError('connection_unavailable','Connect a demo resource to this wallet first.');
         return await approvePairing(store,node,vault.owner,textField(args.pairing_id,36),textField(args.principal,64),textField(args.action,64),Number(args.ttl),clock,w.id);
       } finally{store.close();}
@@ -96,14 +129,16 @@ export async function unlockVault(dir:string,recoveryFile:string,nodeDir:string,
     let raw='';let size=0;
     request.on('data',chunk=>{size+=chunk.length;if(size>65536)request.destroy();else raw+=chunk.toString();});
     request.on('end',()=> {
-      queue=queue.then(async()=> {
+      const handle=async()=> {
         try {
           const auth=request.headers.authorization;
           if(request.method!=='POST'||request.url!=='/owner'||request.headers['content-type']!=='application/json'||typeof auth!=='string'||Buffer.byteLength(auth)!==Buffer.byteLength('Bearer '+token)||!timingSafeEqual(Buffer.from(auth),Buffer.from('Bearer '+token)))throw new AppError('permission_denied','Private owner session required.',403,3,'permission_denied');
           const input=record(JSON.parse(raw));if(Object.keys(input).sort().join(',')!=='args,command')throw new AppError('invalid_request','Use command and args.');
           const data=await execute(textField(input.command,64),record(input.args));response.end(JSON.stringify({status:'ok',data}));
         }catch(error){const safe=publicError(error);response.writeHead(safe.httpStatus);response.end(JSON.stringify({...safe.body,exit_code:safe.exitCode}));}
-      });
+      };
+      let provider=false;try{provider=record(JSON.parse(raw)).command==='provider.execute';}catch{}
+      if(provider)void handle();else queue=queue.then(handle);
     });
   });
   server.requestTimeout=5000;server.headersTimeout=5000;server.keepAliveTimeout=500;

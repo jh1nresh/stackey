@@ -10,6 +10,8 @@ import { startNode } from './node.js';
 import { issueInvitation } from './pairing.js';
 import { Store } from './store.js';
 import { capabilities, liveStatus, operation, runOrders } from './agent-client.js';
+import { onboardLink } from './link-onboarding.js';
+import { providerAction, providerSchema } from './providers.js';
 import { ACTION, CONNECTION, initializeDemo, ORDER_SCHEMA } from './orders.js';
 import { approvePairing, initializeOwner, revokeGrant, seconds } from './policy.js';
 
@@ -31,6 +33,7 @@ const help = `Stackey — local agent authorization demo
   stackey credential remove <credential-id> [--vault-dir ...]
   stackey connection list --wallet <id> [--vault-dir ...]
   stackey connection add --wallet <id> --name <name> --provider demo|supabase|vercel|stripe --config-file <private-JSON-file> [--vault-dir ...]
+  stackey link login | finish | cancel --wallet <id> [--vault-dir ...]
   stackey node init [--data-dir .stackey/node]
   stackey node start [--data-dir .stackey/node] [--port 45820]
   stackey node invite --out <private-file> [--ttl 300] [--data-dir ...]
@@ -47,10 +50,17 @@ const help = `Stackey — local agent authorization demo
   stackey capabilities [--state-dir ...]
   stackey run demo.orders.read --schema
   stackey run demo.orders.read --from 2026-09-26 --to 2026-10-02 [--cursor ...] [--operation-id ...] [--state-dir ...]
+  stackey node approve <pairing-id> --principal <fingerprint> --action <provider-action> --connection <id> --wallet <id> --vault-dir ... [--max-calls 1] [--max-amount-minor 50]
+  stackey run supabase.orders.read --from YYYY-MM-DD --to YYYY-MM-DD [--cursor ...]
+  stackey run vercel.ai.generate --prompt <text> [--operation-id ...]
+  stackey run stripe.payments.read [--cursor ...]
+  stackey run stripe.mpp.pay [--operation-id ...]
   stackey operation <operation-id> [--state-dir ...]
 
 All results are JSON. --json is accepted for compatibility.
-Loopback only. Orders are synthetic local data; Supabase, payments and secret storage are not integrated.
+Loopback only. Provider credentials stay in the vault. Stripe adapters are test mode only.
+Provider operations return operation_pending; poll the same operation ID.
+After Link approval, repeat the same MPP operation ID to resume, never a new one.
 Private state belongs to the execution environment, not an individual Bot.
 `;
 
@@ -70,6 +80,7 @@ async function main() {
       'invite-file': { type: 'string' }, out: { type: 'string' },
       'vault-dir': { type: 'string' }, 'recovery-out': { type: 'string' }, 'recovery-file': { type: 'string' },
       'backup-file': { type: 'string' }, 'secret-file': { type: 'string' }, wallet: { type: 'string' },
+      connection: { type: 'string' }, 'max-calls': { type: 'string' }, 'max-amount-minor': { type: 'string' }, prompt: { type: 'string' },
       kind: { type: 'string' }, provider: { type: 'string' }, 'config-file': { type: 'string' },
       port: { type: 'string' }, ttl: { type: 'string' }, name: { type: 'string' },
       after: { type: 'string' },
@@ -82,6 +93,12 @@ async function main() {
   const stateDir = resolve(values['state-dir'] ?? '.stackey/agent');
   const ownerDir = resolve(values['owner-dir'] ?? '.stackey/owner');
   const vaultDir = resolve(values['vault-dir'] ?? '.stackey/vault');
+  if (command === 'link') {
+    const sub = positionals[1];
+    if (positionals.length !== 2 || !['login', 'finish', 'cancel'].includes(sub ?? '')) throw new AppError('invalid_arguments', 'Use link login, finish or cancel.');
+    const result = await onboardLink(vaultDir, textField(values.wallet, 64), sub as 'login' | 'finish' | 'cancel');
+    output(envelope(String(result.status), result)); return;
+  }
   if (command === 'vault') {
     if (positionals.length !== 2) throw new AppError('invalid_arguments', 'Use vault --help.');
     const subcommand = positionals[1];
@@ -131,7 +148,7 @@ async function main() {
       if (positionals.length !== (sub==='approve'||sub==='revoke'?3:2)) throw new AppError('invalid_arguments','Unexpected Node arguments.');
       const args:Record<string,unknown>={_node_dir:dataDir};
       const action=sub==='owner-init'?'node.bind':sub==='demo-init'?'demo.init':sub==='approve'?'grant.approve':'grant.revoke';
-      if(sub==='approve') Object.assign(args,{pairing_id:textField(positionals[2],36),principal:textField(values.principal,64),action:textField(values.action,64),ttl:values.ttl===undefined?900:Number(values.ttl),wallet_id:values.wallet??'wallet_demo'});
+      if(sub==='approve') Object.assign(args,{pairing_id:textField(positionals[2],36),principal:textField(values.principal,64),action:textField(values.action,64),ttl:values.ttl===undefined?900:Number(values.ttl),wallet_id:values.wallet??'wallet_demo',...(values.connection?{connection_id:values.connection,max_calls:Number(values['max-calls']??1),max_amount_minor:Number(values['max-amount-minor']??0)}:{})});
       if(sub==='revoke') args.grant_id=textField(positionals[2],36);
       output(envelope('ok',await vaultRequest(vaultDir,action,args))); return;
     }
@@ -169,7 +186,7 @@ async function main() {
             if (!row) throw new AppError('invalid_cursor', 'Grant cursor was not found.');
             timestamp = row.created_at as number; id = row.grant_id as string;
           }
-          const rows = store.db.prepare(`SELECT grant_id, pairing_id, principal, created_at, expires_at, version, wallet_id,
+          const rows = store.db.prepare(`SELECT grant_id, pairing_id, principal, created_at, expires_at, version, wallet_id, action, connection_id, max_calls, max_amount_minor,
             CASE WHEN revoked_at IS NOT NULL THEN 'revoked' WHEN expires_at <= ? THEN 'expired' ELSE 'active' END AS status
             FROM grants WHERE (created_at, grant_id) > (?, ?) ORDER BY created_at, grant_id LIMIT 201`).all(seconds(), timestamp, id);
           const page = rows.slice(0, 200);
@@ -241,10 +258,10 @@ async function main() {
   if (command === 'run' && positionals.length === 2) {
     const action = textField(positionals[1], 64);
     if (values.schema) {
-      if (action !== ACTION) throw new AppError('action_not_available', 'Only demo.orders.read is implemented.');
-      output(envelope('ok', ORDER_SCHEMA)); return;
+      if (action !== ACTION && !providerAction(action)) throw new AppError('action_not_available', 'Unsupported action.');
+      output(envelope('ok', action===ACTION?ORDER_SCHEMA:providerSchema(action))); return;
     }
-    output(await runOrders(stateDir, action, { from: values.from, to: values.to,
+    output(await runOrders(stateDir, action, action==='vercel.ai.generate'?{prompt:values.prompt}:action==='stripe.mpp.pay'?{}:action==='stripe.payments.read'?(values.cursor?{cursor:values.cursor}:{}):{ from: values.from, to: values.to,
       ...(values.cursor === undefined ? {} : { cursor: values.cursor }) }, values['operation-id'])); return;
   }
   if (command === 'operation' && positionals.length === 2) {

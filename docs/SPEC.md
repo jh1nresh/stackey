@@ -161,7 +161,7 @@ Grant 示意，非完成的簽署 wire format：
 CLI 配一份短接入指南；讓 agent 知道何時用 Stackey、如何查 schema、等待核准與處理錯誤。操作少而明確，回傳限定資料，不把所有供應商 endpoints 包成工具。
 
 ```bash
-# 完整產品介面；本機已實作 demo.orders.read，Supabase 操作仍待實作
+# 完整產品介面；目前 CLI provider 操作與實測範圍見 CLI_INTEGRATIONS.md
 stackey connect <single-use-invitation> --json
 stackey status --json
 stackey capabilities --json
@@ -338,7 +338,7 @@ supabase/seed.sql         # Synthetic demo data only
 docs/SPEC.md              # Canonical product and architecture contract
 ```
 
-完整產品預定採 TypeScript、Node.js、Next.js、React、Supabase SDK、AI SDK、成熟密碼學／DPoP／MPP 函式庫。接入切片已使用 Node.js 22 原生 SQLite 與鎖定版本的 jose／TypeScript；已採 oauth4webapi 3.8.8 生成／驗證 DPoP session 資源請求；尚未安裝雲端、MPP 或 vault 加密功能的依賴。
+完整產品預定採 TypeScript、Node.js、Next.js、React、Supabase SDK、AI SDK、成熟密碼學／DPoP／MPP 函式庫。接入切片已使用 Node.js 22 原生 SQLite 與鎖定版本的 jose／TypeScript；已採 oauth4webapi 3.8.8 生成／驗證 DPoP session 資源請求；已加入 @scure/bip39 2.2.0、AI SDK 7.0.127、Stripe 23.0.0、mppx 0.13.1 與 Link CLI 0.25.1。Vault 與三家 API 的可執行範圍見 CLI_VAULT.md／CLI_INTEGRATIONS.md；MPP 真實收款、雲端控制平面及官方 Grok Bot 任務尚未通過驗收。
 
 | Milestone | 交付 | 驗證／解除下一階段條件 |
 | --- | --- | --- |

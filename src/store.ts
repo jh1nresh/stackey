@@ -15,7 +15,8 @@ export interface Pairing {
 
 export class Store {
   readonly db: DatabaseSync;
-  constructor(dir: string) {
+  constructor(readonly directory: string) {
+    const dir = directory;
     const path = join(privateDirectory(dir), 'pairings.sqlite');
     if (!existsSync(path)) writeFileSync(path, '', { flag: 'wx', mode: 0o600 });
     const stat = lstatSync(path);
@@ -70,6 +71,20 @@ export class Store {
     if (!this.db.prepare('PRAGMA table_info(grants)').all().some(row => row.name === 'wallet_id')) {
       this.db.exec("ALTER TABLE grants ADD COLUMN wallet_id TEXT NOT NULL DEFAULT 'wallet_demo'");
     }
+    for (const [name, definition] of [
+      ['action', "TEXT NOT NULL DEFAULT 'demo.orders.read'"],
+      ['connection_id', "TEXT NOT NULL DEFAULT 'connection_local_demo'"],
+      ['resource', "TEXT NOT NULL DEFAULT 'demo:store/orders'"],
+      ['max_calls', 'INTEGER NOT NULL DEFAULT 1000'],
+      ['max_amount_minor', 'INTEGER NOT NULL DEFAULT 0'],
+    ]) {
+      if (!this.db.prepare('PRAGMA table_info(grants)').all().some(row => row.name === name)) this.db.exec(`ALTER TABLE grants ADD COLUMN ${name} ${definition}`);
+    }
+    this.db.exec(`CREATE TABLE IF NOT EXISTS provider_operations (
+      operation_id TEXT PRIMARY KEY, grant_id TEXT NOT NULL REFERENCES grants(grant_id), principal TEXT NOT NULL,
+      input_hash TEXT NOT NULL, action TEXT NOT NULL, created_at INTEGER NOT NULL, state TEXT NOT NULL,
+      reserved_minor INTEGER NOT NULL, result_json TEXT
+    )`);
   }
 
   transaction<T>(work: () => T): T {
