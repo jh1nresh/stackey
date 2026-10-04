@@ -10,7 +10,8 @@ import { privateDirectory, readPrivateJson, writePrivateJson, type Identity } fr
 export interface Wallet { id: string; name: string; connections: string[] }
 export interface Credential { id: string; wallet_id: string; name: string; kind: 'password' | 'api_key' | 'private_key'; value: string }
 export interface Connection { id: string; wallet_id: string; provider: 'demo' | 'supabase' | 'vercel' | 'stripe'; name: string; config: Record<string, unknown> }
-export interface VaultData { wallets: Wallet[]; credentials: Credential[]; connections: Connection[] }
+export interface VaultRequest { request_id: string; fingerprint: string; result: Record<string, unknown> }
+export interface VaultData { wallets: Wallet[]; credentials: Credential[]; connections: Connection[]; requests: VaultRequest[] }
 interface Box { iv: string; ciphertext: string; tag: string }
 interface Header { format: 'stackey-vault'; version: 1; vault_id: string; owner: string; salt: string; cipher: 'AES-256-GCM' }
 interface File extends Header { wrapped_key: Box; data: Box }
@@ -59,7 +60,9 @@ function unseal(key: Buffer, value: Box, aad: unknown) {
   return Buffer.concat([cipher.update(bytes(value.ciphertext)),cipher.final()]);
 }
 function validateData(raw: unknown): VaultData {
-  const value = record(raw); exact(value,['wallets','credentials','connections']);
+  const value = record(raw);
+  const keys = Object.keys(value).sort().join(',');
+  if (keys !== 'connections,credentials,wallets' && keys !== 'connections,credentials,requests,wallets') fail();
   if (!Array.isArray(value.wallets) || !Array.isArray(value.credentials) || !Array.isArray(value.connections) ||
       value.wallets.length > 1000 || value.credentials.length > 1000 || value.connections.length > 1000) fail();
   const id = (raw: unknown) => { const text=textField(raw,64); if (!/^(?:wallet_demo|(?:wallet|credential|connection)_[0-9a-f-]{36})$/.test(text)) fail(); return text; };
@@ -77,11 +80,22 @@ function validateData(raw: unknown): VaultData {
     if (!['demo','supabase','vercel','stripe'].includes(String(c.provider))) fail();
     return { id:id(c.id),wallet_id:id(c.wallet_id),provider:c.provider as Connection['provider'],name:displayName(c.name),config:record(c.config) };
   });
+  const requests = value.requests===undefined ? [] : (() => {
+    if (!Array.isArray(value.requests) || value.requests.length > 3000) fail();
+    return value.requests.map(raw => {
+      const r=record(raw); exact(r,['fingerprint','request_id','result']);
+      const request_id=textField(r.request_id,36);
+      if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(request_id)) fail();
+      const fingerprint=textField(r.fingerprint,43);
+      if (!/^[A-Za-z0-9_-]{43}$/.test(fingerprint)) fail();
+      return { request_id, fingerprint, result: record(r.result) };
+    });
+  })();
   if (new Set(wallets.map(w=>w.id)).size !== wallets.length || new Set(credentials.map(c=>c.id)).size !== credentials.length ||
-      new Set(connections.map(c=>c.id)).size !== connections.length ||
+      new Set(connections.map(c=>c.id)).size !== connections.length || new Set(requests.map(r=>r.request_id)).size !== requests.length ||
       [...credentials,...connections].some(c=>!wallets.some(w=>w.id===c.wallet_id)) ||
       wallets.some(w=>new Set(w.connections).size!==w.connections.length || w.connections.some(id=>!connections.some(c=>c.id===id && c.wallet_id===w.id)))) fail();
-  return { wallets,credentials,connections };
+  return { wallets,credentials,connections,requests };
 }
 export async function recovery(file: string) {
   const raw=record(readPrivateJson(resolve(file))); exact(raw,['format','version','mnemonic']);
@@ -121,7 +135,7 @@ export async function initializeVault(dir: string, recoveryOut: string) {
   try {
     const h:Header={format:'stackey-vault',version:1,vault_id:randomUUID(),owner:derived.owner.id,salt:salt.toString('base64url'),cipher:'AES-256-GCM'};
     const wrapped_key=seal(derived.wrapping,master,{...h,purpose:'master-key'});
-    const data:VaultData={wallets:[{id:'wallet_demo',name:'Demo Wallet',connections:[]}],credentials:[],connections:[]};
+    const data:VaultData={wallets:[{id:'wallet_demo',name:'Demo Wallet',connections:[]}],credentials:[],connections:[],requests:[]};
     const encrypted=seal(master,Buffer.from(JSON.stringify(data)),{...h,wrapped_key,purpose:'vault-data'});
     // Recovery file is committed first; a partial init never leaves an unrecoverable vault.
     writePrivateJson(output,{format:'stackey-recovery',version:1,mnemonic});

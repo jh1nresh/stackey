@@ -165,6 +165,24 @@ test('timed-out owner mutations return result_unknown and the same request_id do
   assert.equal(listed.wallets.filter((wallet:{name:string})=>wallet.name==='Research').length,1);
   await assert.rejects(vaultRequest(f.vaultDir,'wallet.create',{name:'Other',request_id:id}),error=>error instanceof AppError&&error.code==='operation_conflict');
 });
+test('request_id replay for wallet, credential and connection survives lock and re-unlock',async t=>{
+  const f=await fixture(t);
+  const walletId=randomUUID();const credentialId=randomUUID();const connectionId=randomUUID();
+  const wallet=await vaultRequest(f.vaultDir,'wallet.create',{name:'Research',request_id:walletId});
+  const credential=await vaultRequest(f.vaultDir,'credential.import',{wallet_id:wallet.id,name:'API',kind:'api_key',value:'fixture-token',request_id:credentialId});
+  const connection=await vaultRequest(f.vaultDir,'connection.add',{wallet_id:wallet.id,name:'Store',provider:'demo',config:{},request_id:connectionId});
+  await f.vault.close();
+  const again=await unlockVault(f.vaultDir,f.recoveryFile,f.nodeDir);t.after(()=>again.close());
+  assert.equal((await vaultRequest(f.vaultDir,'wallet.create',{name:'Research',request_id:walletId})).id,wallet.id);
+  assert.equal((await vaultRequest(f.vaultDir,'credential.import',{wallet_id:wallet.id,name:'API',kind:'api_key',value:'fixture-token',request_id:credentialId})).id,credential.id);
+  assert.equal((await vaultRequest(f.vaultDir,'connection.add',{wallet_id:wallet.id,name:'Store',provider:'demo',config:{},request_id:connectionId})).id,connection.id);
+  assert.equal((await vaultRequest(f.vaultDir,'wallet.list')).wallets.filter((row:{name:string})=>row.name==='Research').length,1);
+  assert.equal((await vaultRequest(f.vaultDir,'credential.list',{wallet_id:wallet.id})).credentials.length,1);
+  assert.equal((await vaultRequest(f.vaultDir,'connection.list',{wallet_id:wallet.id})).connections.length,1);
+  await assert.rejects(vaultRequest(f.vaultDir,'wallet.create',{name:'Other',request_id:walletId}),error=>error instanceof AppError&&error.code==='operation_conflict');
+  await assert.rejects(vaultRequest(f.vaultDir,'credential.import',{wallet_id:wallet.id,name:'Other',kind:'api_key',value:'fixture-token',request_id:credentialId}),error=>error instanceof AppError&&error.code==='operation_conflict');
+  await assert.rejects(vaultRequest(f.vaultDir,'connection.add',{wallet_id:wallet.id,name:'Other',provider:'demo',config:{},request_id:connectionId}),error=>error instanceof AppError&&error.code==='operation_conflict');
+});
 test('an unavailable vault session is still node_locked, not result_unknown',async t=>{
   const f=await fixture(t);await f.vault.close();
   await assert.rejects(vaultRequest(f.vaultDir,'wallet.create',{name:'Research'}),error=>error instanceof AppError&&error.code==='node_locked');

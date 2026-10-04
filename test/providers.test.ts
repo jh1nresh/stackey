@@ -12,6 +12,7 @@ import { AppError } from '../src/contracts.js';
 import { loadIdentity } from '../src/identity.js';
 import { createMerchant } from '../src/mpp-merchant.js';
 import { payMpp, type LinkCall, type PaymentContinuation } from '../src/mpp-payment.js';
+import { assertLinkSpendRequestArgs } from './link-cli-schema.js';
 import { startNode } from '../src/node.js';
 import { issueInvitation } from '../src/pairing.js';
 import { drainProviderOperations } from '../src/provider-operations.js';
@@ -22,11 +23,18 @@ import { vaultRequest } from '../src/vault-client.js';
 import { unlockVault } from '../src/vault-session.js';
 
 const wallet='wallet_demo'; const credential='credential_'+randomUUID();
-const data:VaultData={wallets:[{id:wallet,name:'Test',connections:[]}],credentials:[{id:credential,wallet_id:wallet,name:'Test API',kind:'api_key',value:'sk_test_fixture'}],connections:[]};
+const data:VaultData={wallets:[{id:wallet,name:'Test',connections:[]}],credentials:[{id:credential,wallet_id:wallet,name:'Test API',kind:'api_key',value:'sk_test_fixture'}],connections:[],requests:[]};
+const schemaLink=(handler:LinkCall):LinkCall=>async(token,args)=>{assertLinkSpendRequestArgs(args);return handler(token,args);};
 const connection=(provider:Connection['provider'],config:Record<string,unknown>):Connection=>({id:'connection_'+randomUUID(),wallet_id:wallet,provider,name:'Fixture',config});
 const supabase=connection('supabase',{project_ref:'abcdefghijklmnopqrst',credential_id:credential});
 const payment=connection('stripe',{mode:'mpp',endpoint:'https://stackey-sandbox.vercel.app/api/paid-report',network_id:'profile_test_fixture',credential_id:credential,payment_method_id:'pm_fixture',amount_minor:50});
 
+test('Link spend-request mock rejects flags outside the 0.25.1 CLI schema',()=>{
+  assert.doesNotThrow(()=>assertLinkSpendRequestArgs(['spend-request','request-approval','sr_fixture']));
+  assert.doesNotThrow(()=>assertLinkSpendRequestArgs(['spend-request','retrieve','sr_fixture','--include','shared_payment_token','--interval','0','--max-attempts','1']));
+  assert.throws(()=>assertLinkSpendRequestArgs(['spend-request','request-approval','sr_fixture','--interval','0','--max-attempts','1']));
+  assert.throws(()=>assertLinkSpendRequestArgs(['spend-request','create','--interval','0']));
+});
 test('provider configurations reject arbitrary destinations, cross-wallet credentials, extra config and live Stripe mode',()=>{
   assert.deepEqual(connectionConfig('supabase',supabase.config,data,wallet),supabase.config);
   for(const config of [{...supabase.config,url:'http://127.0.0.1'},{...supabase.config,project_ref:'../bad'},supabase.config]){
@@ -80,10 +88,10 @@ async function merchantFixture(){
 }
 test('real mppx challenge -> Link approval continuation -> SPT payment returns a bound receipt without exposing credentials',async()=>{
   const merchant=await merchantFixture();const operationId=randomUUID();let creates=0;let requested=0;
-  const link:LinkCall=async(token,args)=>{assert.equal(token,'fixture-link-token');if(args[1]==='create'){creates++;assert.ok(args.includes('--test'));assert.ok(!args.includes('--request-approval'));assert.equal(args[args.indexOf('--amount')+1],'50');return {id:'sr_fixture',status:'created'};}
-    if(args[1]==='request-approval'){requested++;assert.equal(args[2],'sr_fixture');assert.ok(args.includes('--interval'));return {id:'sr_fixture',status:'pending_approval',approval_url:'https://app.link.com/approve/fixture'};}
+  const link=schemaLink(async(token,args)=>{assert.equal(token,'fixture-link-token');if(args[1]==='create'){creates++;assert.ok(args.includes('--test'));assert.ok(!args.includes('--request-approval'));assert.equal(args[args.indexOf('--amount')+1],'50');return {id:'sr_fixture',status:'created'};}
+    if(args[1]==='request-approval'){requested++;assert.deepEqual(args,['spend-request','request-approval','sr_fixture']);return {id:'sr_fixture',status:'pending_approval',approval_url:'https://app.link.com/approve/fixture'};}
     return {id:'sr_fixture',status:'approved',amount:50,currency:'usd',network_id:'profile_test_fixture',credential_type:'shared_payment_token',test:true,shared_payment_token:{id:'spt_fixture_secret'}};
-  };
+  });
   const waiting=await payMpp(payment,'fixture-link-token',operationId,50,()=>{},undefined,merchant.transport,link);assert.equal(waiting.state,'approval_required');assert.equal(merchant.charges(),0);assert.equal(creates,1);assert.equal(requested,1);
   const completed=await payMpp(payment,'fixture-link-token',operationId,50,()=>{},waiting.result as unknown as PaymentContinuation,merchant.transport,link);
   assert.equal(completed.state,'completed');assert.equal(merchant.charges(),1);assert.equal(creates,1);assert.equal((completed.result.receipt as any).externalId,operationId);assert.ok(!JSON.stringify(completed).includes('spt_fixture_secret'));
@@ -92,7 +100,7 @@ test('real mppx challenge -> Link approval continuation -> SPT payment returns a
 test('MPP create stays approval_required even when Link already reports approved',async()=>{
   const merchant=await merchantFixture();const operationId=randomUUID();let retrieve=0;
   const approved={id:'sr_fixture',status:'approved',amount:50,currency:'usd',network_id:'profile_test_fixture',credential_type:'shared_payment_token',test:true,shared_payment_token:{id:'spt_should_not_use'}};
-  const link:LinkCall=async(_token,args)=>{if(args[1]==='retrieve'){retrieve++;return approved;}return approved;};
+  const link=schemaLink(async(_token,args)=>{if(args[1]==='retrieve'){retrieve++;return approved;}return approved;});
   const waiting=await payMpp(payment,'fixture-link-token',operationId,50,()=>{},undefined,merchant.transport,link);
   assert.equal(waiting.state,'approval_required');assert.equal(merchant.charges(),0);assert.equal(retrieve,0);assert.ok(!JSON.stringify(waiting).includes('spt_should_not_use'));
 });
@@ -105,8 +113,8 @@ test('MPP rejects price/profile/task tampering and revocation before terminal pa
     await assert.rejects(payMpp(payment,'fixture',op,50,()=>{},undefined,transport,link));
   }
   assert.equal(linkCalls,0);
-  const merchant=await merchantFixture();const op=randomUUID();const waiting=await payMpp(payment,'fixture',op,50,()=>{},undefined,merchant.transport,async()=>({id:'sr_fixture',status:'pending_approval'}));
-  let checks=0;await assert.rejects(payMpp(payment,'fixture',op,50,()=>{if(++checks===2)throw new AppError('grant_revoked','revoked');},waiting.result as unknown as PaymentContinuation,merchant.transport,async()=>({status:'approved',amount:50,currency:'usd',network_id:'profile_test_fixture',credential_type:'shared_payment_token',test:true,shared_payment_token:{id:'spt_fixture'}})));
+  const merchant=await merchantFixture();const op=randomUUID();  const waiting=await payMpp(payment,'fixture',op,50,()=>{},undefined,merchant.transport,schemaLink(async()=>({id:'sr_fixture',status:'pending_approval'})));
+  let checks=0;await assert.rejects(payMpp(payment,'fixture',op,50,()=>{if(++checks===2)throw new AppError('grant_revoked','revoked');},waiting.result as unknown as PaymentContinuation,merchant.transport,schemaLink(async()=>({status:'approved',amount:50,currency:'usd',network_id:'profile_test_fixture',credential_type:'shared_payment_token',test:true,shared_payment_token:{id:'spt_fixture'}}))));
   assert.equal(merchant.charges(),0);
   const probe=await merchant.handler(new Request(String(payment.config.endpoint),{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({operation_id:op})}));const challenge=Challenge.fromResponse(probe);
   const altered={...challenge,request:{...challenge.request,amount:'1'}};

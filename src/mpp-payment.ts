@@ -55,10 +55,10 @@ export async function payMpp(connection: Connection, token: string, operationId:
       return url;
     };
     let url = approvalUrl(requested.approval_url);
-    // Fail-closed: create never pays. Request approval without polling so the
-    // owner can act; do not treat an auto-approved create as a completed payment.
+    // Fail-closed: create never pays. @stripe/link-cli@0.25.1 request-approval
+    // accepts only the spend-request id; polling flags belong to retrieve.
     check();
-    const submitted = await link(token, ['spend-request', 'request-approval', id, '--interval', '0', '--max-attempts', '1']);
+    const submitted = await link(token, ['spend-request', 'request-approval', id]);
     if (submitted.approval_url !== undefined) url = approvalUrl(submitted.approval_url);
     continuation = { spend_request_id: id, challenge: Challenge.serialize(challenge), approval_url: url };
     return { state: 'approval_required', result: { ...continuation, source: 'stripe_mpp_test', amount_minor: amount, currency: 'USD' } };

@@ -31,7 +31,6 @@ export async function unlockVault(dir:string,recoveryFile:string,nodeDir:string,
   const socket=join(socketDir,'owner.sock');const token=randomBytes(32).toString('base64url');const expiresAt=clock()+ttl;
   let bound=false;let closing:Promise<void>|undefined;let queue=Promise.resolve();
   const configuredNodeDir=resolve(nodeDir);
-  const requests=new Map<string,{fingerprint:string,result:unknown}>();
   const requestFingerprint=(command:string,args:Record<string,unknown>)=>{
     const rest={...args};delete rest.request_id;
     return digest(JSON.stringify({command,args:Object.fromEntries(Object.entries(rest).sort(([a],[b])=>a.localeCompare(b)))}));
@@ -44,12 +43,16 @@ export async function unlockVault(dir:string,recoveryFile:string,nodeDir:string,
   };
   const replayed=(command:string,args:Record<string,unknown>)=>{
     const id=requestId(args);if(!id)return;
-    const prior=requests.get(id);if(!prior)return;
+    const prior=vault.data.requests.find(row=>row.request_id===id);if(!prior)return;
     if(prior.fingerprint!==requestFingerprint(command,args))throw new AppError('operation_conflict','request_id belongs to different parameters.');
     return prior.result;
   };
-  const remember=(command:string,args:Record<string,unknown>,result:unknown)=>{
-    const id=requestId(args);if(id)requests.set(id,{fingerprint:requestFingerprint(command,args),result});
+  const remember=(command:string,args:Record<string,unknown>,result:Record<string,unknown>)=>{
+    const id=requestId(args);if(id)vault.data.requests.push({request_id:id,fingerprint:requestFingerprint(command,args),result});
+  };
+  const forget=(args:Record<string,unknown>)=>{
+    const id=requestId(args);if(!id)return;
+    const index=vault.data.requests.findIndex(row=>row.request_id===id);if(index>=0)vault.data.requests.splice(index,1);
   };
   const guard=(store:Store)=>requireBoundVault(store,token,vault.vaultId);
   const setPolicy=(unlocked:boolean)=> {
@@ -82,9 +85,11 @@ export async function unlockVault(dir:string,recoveryFile:string,nodeDir:string,
     if(command==='wallet.list'){exact([],['after']);const result=page(vault.data.wallets);return {wallets:result.values.map(w=>({...w,address:`stackey:${vault.owner.id}/${w.id}`})),next_cursor:result.next_cursor,complete:result.complete};}
     if(command==='wallet.create'){
       exact(['name'],['request_id']);const replay=replayed(command,args);if(replay)return replay;
-      const value={id:'wallet_'+randomUUID(),name:displayName(args.name),connections:[]};vault.data.wallets.push(value);
-      try{save();}catch(error){vault.data.wallets.pop();throw error;}
-      const result={...value,address:`stackey:${vault.owner.id}/${value.id}`};remember(command,args,result);return result;
+      const value={id:'wallet_'+randomUUID(),name:displayName(args.name),connections:[]};
+      const result={...value,address:`stackey:${vault.owner.id}/${value.id}`};
+      vault.data.wallets.push(value);remember(command,args,result);
+      try{save();}catch(error){vault.data.wallets.pop();forget(args);throw error;}
+      return result;
     }
     if(command==='credential.list'){exact(['wallet_id'],['after']);const w=wallet(args.wallet_id);const result=page(vault.data.credentials.filter(c=>c.wallet_id===w.id));return {credentials:result.values.map(({value,...metadata})=>metadata),next_cursor:result.next_cursor,complete:result.complete};}
     if(command==='credential.import') {
@@ -92,8 +97,10 @@ export async function unlockVault(dir:string,recoveryFile:string,nodeDir:string,
       const w=wallet(args.wallet_id);
       if(!['password','api_key','private_key'].includes(String(args.kind)))throw new AppError('invalid_kind','Use password, api_key or private_key.');
       const value:Credential={id:'credential_'+randomUUID(),wallet_id:w.id,name:displayName(args.name),kind:args.kind as Credential['kind'],value:textField(args.value,16384)};
-      vault.data.credentials.push(value);try{save();}catch(error){vault.data.credentials.pop();throw error;}
-      const metadata={id:value.id,wallet_id:value.wallet_id,name:value.name,kind:value.kind};remember(command,args,metadata);return metadata;
+      const metadata={id:value.id,wallet_id:value.wallet_id,name:value.name,kind:value.kind};
+      vault.data.credentials.push(value);remember(command,args,metadata);
+      try{save();}catch(error){vault.data.credentials.pop();forget(args);throw error;}
+      return metadata;
     }
     if(command==='credential.remove'){exact(['credential_id']);const id=textField(args.credential_id,64);const index=vault.data.credentials.findIndex(c=>c.id===id);if(index<0)throw new AppError('credential_not_found','Credential was not found.');const old=vault.data.credentials.splice(index,1)[0]!;try{save();}catch(error){vault.data.credentials.splice(index,0,old);throw error;}return {credential_id:id,removed:true};}
     if(command==='connection.list'){exact(['wallet_id'],['after']);const w=wallet(args.wallet_id);const result=page(vault.data.connections.filter(c=>c.wallet_id===w.id));return {connections:result.values.map(({config,...metadata})=>metadata),next_cursor:result.next_cursor,complete:result.complete};}
@@ -102,8 +109,10 @@ export async function unlockVault(dir:string,recoveryFile:string,nodeDir:string,
       const w=wallet(args.wallet_id);
       if(!['demo','supabase','vercel','stripe'].includes(String(args.provider)))throw new AppError('invalid_provider','Use a supported provider.');
       const value:Connection={id:'connection_'+randomUUID(),wallet_id:w.id,name:displayName(args.name),provider:args.provider as Connection['provider'],config:connectionConfig(args.provider as Connection['provider'],args.config,vault.data,w.id)};
-      vault.data.connections.push(value);w.connections.push(value.id);try{save();}catch(error){vault.data.connections.pop();w.connections.pop();throw error;}
-      const metadata={id:value.id,wallet_id:value.wallet_id,name:value.name,provider:value.provider};remember(command,args,metadata);return metadata;
+      const metadata={id:value.id,wallet_id:value.wallet_id,name:value.name,provider:value.provider};
+      vault.data.connections.push(value);w.connections.push(value.id);remember(command,args,metadata);
+      try{save();}catch(error){vault.data.connections.pop();w.connections.pop();forget(args);throw error;}
+      return metadata;
     }
     if(command==='provider.execute') {
       exact(['grant_id','principal','action','params','operation_id'],['previous']);
