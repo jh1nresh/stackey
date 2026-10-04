@@ -6,6 +6,8 @@ import { parseArgs } from 'node:util';
 import { connect, localStatus } from './client.js';
 import { AppError, envelope, publicError, record, textField } from './contracts.js';
 import { loadIdentity, privateDirectory, readPrivateJson, writePrivateJson } from './identity.js';
+import { orderReport } from './order-report.js';
+import { startWallet } from './wallet.js';
 import { startNode } from './node.js';
 import { issueInvitation } from './pairing.js';
 import { Store } from './store.js';
@@ -27,6 +29,7 @@ const help = `Stackey — local agent authorization demo
   stackey vault recover-session [--vault-dir ...]
   stackey vault backup --out <new-private-file> [--vault-dir ...]
   stackey vault restore --backup-file <private-file> --recovery-file <private-file> [--vault-dir <new-dir>]
+  stackey wallet start [--vault-dir ...] [--data-dir ...] [--port 45821] [--node-port 45820] [--public-endpoint https://your-agent-host]
   stackey wallet list | create --name <name> [--vault-dir ...]
   stackey credential list --wallet <id> [--vault-dir ...]
   stackey credential import --wallet <id> --name <name> --kind password|api_key|private_key --secret-file <private-JSON-file> [--vault-dir ...]
@@ -35,7 +38,7 @@ const help = `Stackey — local agent authorization demo
   stackey connection add --wallet <id> --name <name> --provider demo|supabase|vercel|stripe --config-file <private-JSON-file> [--vault-dir ...]
   stackey link login | finish | cancel --wallet <id> [--vault-dir ...]
   stackey node init [--data-dir .stackey/node]
-  stackey node start [--data-dir .stackey/node] [--port 45820]
+  stackey node start [--data-dir .stackey/node] [--port 45820] [--public-endpoint https://your-agent-host]
   stackey node invite --out <private-file> [--ttl 300] [--data-dir ...]
   stackey node pairings [--data-dir ...] [--after <next_cursor>]
   stackey node owner-init [--owner-dir .stackey/owner] [--data-dir ...]
@@ -55,12 +58,14 @@ const help = `Stackey — local agent authorization demo
   stackey run vercel.ai.generate --prompt <text> [--operation-id ...]
   stackey run stripe.payments.read [--cursor ...]
   stackey run stripe.mpp.pay [--operation-id ...]
+  stackey report --from 2026-09-26 --to 2026-10-02 [--state-dir ...]
   stackey operation <operation-id> [--state-dir ...]
 
-All results are JSON. --json is accepted for compatibility.
-Loopback only. Provider credentials stay in the vault. Stripe adapters are test mode only.
+Reports are Markdown; other results are JSON. --json is accepted for compatibility.
+Local Node with optional public HTTPS Agent origin. Provider credentials stay in the vault. Stripe adapters are test mode only.
 Provider operations return operation_pending; poll the same operation ID.
 After Link approval, repeat the same MPP operation ID to resume, never a new one.
+
 Private state belongs to the execution environment, not an individual Bot.
 `;
 
@@ -82,6 +87,7 @@ async function main() {
       'backup-file': { type: 'string' }, 'secret-file': { type: 'string' }, wallet: { type: 'string' },
       connection: { type: 'string' }, 'max-calls': { type: 'string' }, 'max-amount-minor': { type: 'string' }, prompt: { type: 'string' },
       kind: { type: 'string' }, provider: { type: 'string' }, 'config-file': { type: 'string' },
+      'node-port': { type: 'string' }, 'public-endpoint': { type: 'string' },
       port: { type: 'string' }, ttl: { type: 'string' }, name: { type: 'string' },
       after: { type: 'string' },
       json: { type: 'boolean' },
@@ -128,6 +134,14 @@ async function main() {
       rmdirSync(directory); unlinkSync(path); output(envelope('ok',{status:'locked',stale_session_removed:true})); return;
     }
     throw new AppError('unknown_command','Use vault --help.');
+  }
+  if (command === 'wallet' && positionals[1] === 'start') {
+    if (positionals.length !== 2) throw new AppError('invalid_arguments', 'Unexpected wallet arguments.');
+    const wallet = await startWallet(dataDir, values['owner-dir'] && !values['vault-dir'] ? ownerDir : { vaultDir },
+      Number(values.port ?? 45821), Number(values['node-port'] ?? 45820), undefined, values['public-endpoint']);
+    output(envelope('ok', { wallet_url: wallet.launchUrl, endpoint: wallet.nodeEndpoint }));
+    const stop = () => { void wallet.close().catch(error => { const safe=publicError(error); output(safe.body); process.exitCode=safe.exitCode; }); };
+    process.once('SIGINT',stop); process.once('SIGTERM',stop); return;
   }
   if (['wallet','credential','connection'].includes(command ?? '')) {
     const subcommand=positionals[1]; let args:Record<string,unknown>;
@@ -208,7 +222,7 @@ async function main() {
     }
     if (subcommand === 'start') {
       const port = values.port === undefined ? 45820 : Number(values.port);
-      const node = await startNode(dataDir, port);
+      const node = await startNode(dataDir, port, undefined, values['public-endpoint']);
       output(envelope('ok', { node_id: node.nodeId, endpoint: node.endpoint, mode: 'local_pairing_only' }));
       const stop = () => { void node.close().catch(error => {
         const safe = publicError(error); output(safe.body); process.exitCode = safe.exitCode;
@@ -263,6 +277,9 @@ async function main() {
     }
     output(await runOrders(stateDir, action, action==='vercel.ai.generate'?{prompt:values.prompt}:action==='stripe.mpp.pay'?{}:action==='stripe.payments.read'?(values.cursor?{cursor:values.cursor}:{}):{ from: values.from, to: values.to,
       ...(values.cursor === undefined ? {} : { cursor: values.cursor }) }, values['operation-id'])); return;
+  }
+  if (command === 'report' && positionals.length === 1) {
+    process.stdout.write(await orderReport(stateDir, { from: values.from, to: values.to })); return;
   }
   if (command === 'operation' && positionals.length === 2) {
     output(await operation(stateDir, textField(positionals[1], 36))); return;

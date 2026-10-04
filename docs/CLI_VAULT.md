@@ -32,7 +32,7 @@ node dist/src/cli.js wallet list
 node dist/src/cli.js wallet create --name Research
 ```
 
-解鎖期限 60–3600 秒，預設 900 秒。解鎖只在 Unix socket 程序記憶體中持有解密金鑰；不建立 HTTP 管理 API。`node owner-init --vault-dir` 將這個 Owner 綁到 unlock 時指定的 Node，拒絕替換另一個 Owner。
+解鎖期限 60–3600 秒，預設 900 秒。解鎖只在 Unix socket 程序記憶體中持有解密金鑰；單獨 unlock 不建立 HTTP 管理 API；明確啟動下方 wallet UI 才開啟獨立的 loopback Owner 介面。`node owner-init --vault-dir` 將這個 Owner 綁到 unlock 時指定的 Node，拒絕替換另一個 Owner。
 
 ## 匯入與清單
 
@@ -48,6 +48,19 @@ node dist/src/cli.js credential remove CREDENTIAL_ID
 種類為 `password`、`api_key`、`private_key`。清單與匯入結果只回傳 ID、wallet、名称與種類；没有秘密匯出或通用簽章命令。輸入檔案不會自動刪除，Owner 自行管理其保管。這是保管功能，尚不代表任意網站可自動登入。
 
 錢包、憑證和 connection 清單每頁 100 筆。當 `next_cursor` 非 null，使用 `--after NEXT_CURSOR` 取得下一頁，直到 `complete: true`。
+
+## 本機錢包介面
+
+先完成上面的 unlock 與 owner-init。若先前已啟動獨立的 `node start`，請停止該程序；`wallet start` 會自行啟動 Node listener：
+
+```bash
+node dist/src/cli.js wallet start --vault-dir .stackey/vault \
+  --data-dir .stackey/vault-node --port 45821 --node-port 45822
+```
+
+只在自己的瀏覽器開啟回傳的 `wallet_url`。URL 含一小時 Owner 管理權限，不應傳給 agent。介面列出各 wallet 的憑證中繼資料；點選單筆後按 Reveal secret 才讀取明文，30 秒後或離開／關閉視窗時隱藏。清單 API、agent listener、事件均不回傳秘密。Vault 鎖定或到期後不能再次顯示秘密。私有 Owner socket 新增限指定 vault instance 的 inventory/reveal 命令，並不開放任意簽章。
+
+Agent 頁顯示驗證後的目前操作權限、wallet／resource、到期時間與憑證存取狀態。由此介面新核准的 agent 只能讀取 demo orders；沒有查看／建立憑證或委派權限。既有 CLI 服務授權會顯示其實際動作，服務 adapter 使用說明見 [CLI_INTEGRATIONS.md](CLI_INTEGRATIONS.md)。此介面仍需獨立安全審查，不應將同 OS 使用者視為安全隔離。
 
 ## 連接測試資源並授權 agent
 

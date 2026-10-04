@@ -49,6 +49,19 @@ export async function unlockVault(dir:string,recoveryFile:string,nodeDir:string,
       const values=rows.slice(offset,offset+100);const complete=offset+values.length>=rows.length;
       return {values,next_cursor:complete?null:values.at(-1)!.id,complete};
     };
+    // Owner-only wallet UI commands. The launch is pinned to this vault instance.
+    if(command==='wallet.inventory' || command==='credential.reveal') {
+      exact(command==='wallet.inventory'?['vault_id']:['vault_id','credential_id','confirmed'],command==='wallet.inventory'?['after']:[]);
+      if(args.vault_id!==vault.vaultId)throw new AppError('owner_mismatch','Wallet launch belongs to a different vault.',403);
+      if(command==='wallet.inventory') {
+        const result=page(vault.data.credentials);
+        return {credentials:result.values.map(({value,...metadata})=>({...metadata,wallet_name:wallet(metadata.wallet_id).name})),total:vault.data.credentials.length,next_cursor:result.next_cursor};
+      }
+      if(args.confirmed!==true)throw new AppError('confirmation_required','Explicitly reveal this credential.');
+      const credential=vault.data.credentials.find(c=>c.id===textField(args.credential_id,64));
+      if(!credential)throw new AppError('credential_not_found','Credential was not found.');
+      return {credential_id:credential.id,value:credential.value};
+    }
     if(command==='wallet.list'){exact([],['after']);const result=page(vault.data.wallets);return {wallets:result.values.map(w=>({...w,address:`stackey:${vault.owner.id}/${w.id}`})),next_cursor:result.next_cursor,complete:result.complete};}
     if(command==='wallet.create'){exact(['name']);const value={id:'wallet_'+randomUUID(),name:displayName(args.name),connections:[]};vault.data.wallets.push(value);try{save();}catch(error){vault.data.wallets.pop();throw error;}return {...value,address:`stackey:${vault.owner.id}/${value.id}`};}
     if(command==='credential.list'){exact(['wallet_id'],['after']);const w=wallet(args.wallet_id);const result=page(vault.data.credentials.filter(c=>c.wallet_id===w.id));return {credentials:result.values.map(({value,...metadata})=>metadata),next_cursor:result.next_cursor,complete:result.complete};}

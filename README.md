@@ -6,7 +6,7 @@ Stackey is a resource wallet managed by people and used by agents. Users retain 
 
 ## Current Status
 
-The local CLI supports pairing, Owner approval, short-lived DPoP sessions, capability discovery, read-only access to synthetic orders, operation queries, and revocation. Orders currently come from the local `local_synthetic` source. The CLI also supports a recovery-phrase-based vault, encrypted credentials, multiple wallets, backup and recovery, and locking. Read-only Supabase orders, Vercel AI Gateway generation, and read-only Stripe test payments are implemented and have passed real sandbox testing. The Link/MPP protocol and local tests are implemented; real MPP collection still awaits a Stripe sandbox profile, Link approval, and endpoint deployment. The wallet UI is developed separately. The repository's initial default branch is `spec`.
+The local CLI supports pairing, Owner approval, short-lived DPoP sessions, capability discovery, read-only access to synthetic orders, operation queries, and revocation. Orders currently come from the local `local_synthetic` source. The CLI also supports a recovery-phrase-based vault, encrypted credentials, multiple wallets, backup and recovery, and locking. Read-only Supabase orders, Vercel AI Gateway generation, and read-only Stripe test payments are implemented and have passed real sandbox testing. The Link/MPP protocol and local tests are implemented; real MPP collection still awaits a Stripe sandbox profile, Link approval, and endpoint deployment. The English local wallet UI supports credential metadata and explicit reveal, verified Agent permissions, invitations, approval and revocation. Setup/recovery UI, an optional public HTTPS Agent origin and daily demo reports are also included; independent security review remains pending. The repository's initial default branch is `spec`.
 
 **The single source of truth for the current product specification is [docs/SPEC.md](docs/SPEC.md).** Most of the full product API and data model remain to be implemented. For the currently runnable functionality, see the [pairing format](docs/CLI_PAIRING.md) and [approval, execution, and revocation guide](docs/CLI_AUTHORIZATION.md).
 
@@ -38,7 +38,28 @@ The initial connection returns a pairing ID awaiting approval and a public key f
 
 `node pairings` returns up to 200 entries per page. If `data.next_cursor` in the JSON response is not `null`, run `node pairings --after <next_cursor>` to fetch the next page, continuing until it is `null`. Do not treat a truncated list as a complete result.
 
-For raw CLI JSON output without npm's script headers, use `node dist/src/cli.js ...`. Invitation files contain single-use connection material, default to mode 0600, and cannot be overwritten. Do not commit them to git. At this stage, only `http://127.0.0.1:<port>` is supported; cloud access from the official Grok Bot has not been verified.
+For raw CLI JSON output without npm's script headers, use `node dist/src/cli.js ...`. Invitation files contain single-use connection material, default to mode 0600, and cannot be overwritten. Do not commit them to git. Public HTTPS Agent origins are supported; see [Cloud demo](docs/CLOUD_DEMO.md). The official Grok Bot execution environment has not yet been verified.
+
+## Local Wallet UI
+
+For a new seed-backed wallet, use the [setup and recovery UI](docs/WALLET_SETUP.md). It stores the encrypted vault and recovery file in a new private directory.
+
+For the existing legacy pairing demo, prepare its Owner and synthetic test data:
+
+```bash
+npm run build
+npm run stackey -- node owner-init
+npm run stackey -- node demo-init
+npm run stackey -- wallet start --owner-dir .stackey/owner
+```
+
+`wallet start` launches both the agent Node (port 45820 by default) and a separate wallet UI (45821). If an existing `node start` process is running, stop it with Ctrl+C in its terminal first. Existing identities, pairings, and grants are preserved. Use `--data-dir`, `--owner-dir`, `--port`, and `--node-port` to specify private directories and ports.
+
+Open the full `wallet_url` printed in the terminal, click "Invite agent", and copy the connection command, which is valid for 5 minutes. The command chooses a fresh private Agent state directory. Local invitations run from this repository; HTTPS invitations download a bundled Agent CLI on the cloud computer. Connecting only requests approval. The UI refreshes every 5 seconds and supports loading all pairings through pagination.
+
+Verify the full public key fingerprint returned by the agent, then approve `demo.orders.read` access for 1, 5, or 15 minutes in the UI. The agent can read orders using the CLI guide above. Revoking access and confirming the action blocks both new requests and existing sessions. The activity view shows the 20 most recent entries; use `node events` to page through the full history.
+
+The `wallet_url` contains an Owner administration credential and is only for opening your wallet. **Do not share it with an agent.** The credential exists only in process and page memory, is removed from the URL after the page opens, and expires after one hour. To reload the page, reopen the full URL from the terminal; after it expires, restart the process. Ctrl+C stops both listeners. Owner administration stays local; cloud agents use the separate Agent listener through a public HTTPS tunnel. Agents sharing the same OS user/state are not strongly isolated. See [Cloud demo](docs/CLOUD_DEMO.md) for reporting and revocation.
 
 ## Verification
 
@@ -67,7 +88,7 @@ Tests cover Owner approval, isolation between two agents, order correctness, DPo
 
 ## First Demo
 
-Create a bot in the official Grok Bot and have it request access through the Stackey CLI. The user approves read-only access to test orders in the wallet. The bot retrieves actual synthetic records from Supabase and produces a summary. Afterward, revoke access and verify that subsequent requests are rejected.
+Create a bot in the official Grok Bot and have it request access through the Stackey CLI. The user approves read-only access to test orders in the wallet. The minimal wallet demo reads local synthetic orders and produces a daily report with currency-separated revenue, failure rates and anomaly signals. The existing Supabase adapter is available separately through the CLI service integration guide. Afterward, revoke access and verify that subsequent requests are rejected.
 
 The primary demo verifies connection and task completion. Stripe MPP sandbox and AI Gateway form a second acceptance stage within the same architecture. A fake balance displayed in the UI is not a substitute for payment integration.
 
