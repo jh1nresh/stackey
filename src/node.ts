@@ -1,3 +1,4 @@
+import { drainProviderOperations } from './provider-operations.js';
 import { createServer, type IncomingMessage, type Server } from 'node:http';
 import { AppError, digest, envelope, MAX_BODY, publicError, textField } from './contracts.js';
 import { agentAction, signedResponse } from './access.js';
@@ -109,7 +110,7 @@ export async function startNode(dir: string, port = 45820, clock = () => Math.fl
   return { server, endpoint: origin, nodeId: identity.id,
     close() {
       closing ??= new Promise<void>((resolve, reject) => {
-        server.close(error => { store.close(); error ? reject(error) : resolve(); });
+        server.close(error => { void drainProviderOperations(identity.id).then(()=>{store.close();error?reject(error):resolve();},reject); });
         server.closeIdleConnections();
       });
       return closing;

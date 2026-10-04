@@ -6,9 +6,11 @@ Stackey is a resource wallet managed by people and used by agents. Users retain 
 
 ## Current Status
 
-The local CLI supports pairing, Owner approval, short-lived DPoP sessions, capability discovery, read-only access to synthetic orders, operation queries, and revocation. Orders currently come from the local `local_synthetic` source. The CLI also supports a recovery-phrase-based vault, encrypted credentials, multiple wallets, backup and recovery, and locking. Supabase, Vercel, and Stripe service operations and the wallet UI still await acceptance testing. The repository's initial default branch is `spec`.
+The local CLI supports pairing, Owner approval, short-lived DPoP sessions, capability discovery, read-only access to synthetic orders, operation queries, and revocation. Orders currently come from the local `local_synthetic` source. The CLI also supports a recovery-phrase-based vault, encrypted credentials, multiple wallets, backup and recovery, and locking. Read-only Supabase orders, Vercel AI Gateway generation, and read-only Stripe test payments are implemented and have passed real sandbox testing. The Link/MPP protocol and local tests are implemented; real MPP collection still awaits a Stripe sandbox profile, Link approval, and endpoint deployment. The wallet UI is developed separately. The repository's initial default branch is `spec`.
 
 **The single source of truth for the current product specification is [docs/SPEC.md](docs/SPEC.md).** Most of the full product API and data model remain to be implemented. For the currently runnable functionality, see the [pairing format](docs/CLI_PAIRING.md) and [approval, execution, and revocation guide](docs/CLI_AUTHORIZATION.md).
+
+For API setup for the three services, agent execution, and the sandbox test evidence, see the [CLI service integration guide](docs/CLI_INTEGRATIONS.md).
 
 For the local vault and seed-backed Owner, see the [CLI vault guide](docs/CLI_VAULT.md). The legacy pairing demo continues to use its existing Owner and does not migrate automatically.
 
@@ -17,7 +19,7 @@ For the local vault and seed-backed Owner, see the [CLI vault guide](docs/CLI_VA
 Requires macOS or Linux and Node.js 22.18 or later. Stackey uses Node's native SQLite support; Node 22 may print an experimental warning to stderr.
 
 ```bash
-npm ci
+npm ci --ignore-scripts
 npm run build
 npm run stackey -- node init
 npm run stackey -- node start

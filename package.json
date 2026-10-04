@@ -14,12 +14,17 @@
     "build": "tsc",
     "typecheck": "tsc --noEmit",
     "test": "npm run build && node --test dist/test/*.test.js",
-    "stackey": "node dist/src/cli.js"
+    "stackey": "node dist/src/cli.js",
+    "test:sandbox": "npm run build && node dist/scripts/sandbox-smoke.js"
   },
   "dependencies": {
     "@scure/bip39": "2.2.0",
+    "@stripe/link-cli": "0.25.1",
+    "ai": "7.0.127",
     "jose": "6.2.12",
-    "oauth4webapi": "3.8.8"
+    "mppx": "0.13.1",
+    "oauth4webapi": "3.8.8",
+    "stripe": "23.0.0"
   },
   "devDependencies": {
     "@types/node": "22.20.5",

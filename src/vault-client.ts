@@ -26,7 +26,7 @@ export async function vaultRequest(dir: string, command: string, args: Record<st
         }catch{reject(new AppError('invalid_response','Vault returned an invalid response.'));}
       });
     });
-    pending.setTimeout(2000,()=>pending.destroy());
+    pending.setTimeout(command==='provider.execute'?45000:2000,()=>pending.destroy());
     pending.on('error',()=>reject(new AppError('node_locked','Vault session is unavailable. Unlock it again.',403,3,'node_locked')));
     pending.end(payload);
   });

@@ -1,6 +1,6 @@
 # CLI 保險箱、錢包與憑證
 
-此階段完成本機保險箱與 seed-backed Owner；服務 adapter 在後續整合。所有測試只用新建 fixture，既有 `.stackey/node` 和 agent 身分不自動搬移或重新核准。
+此階段完成本機保險箱與 seed-backed Owner；三家服務 API 操作另見 [CLI 服務整合指南](CLI_INTEGRATIONS.md)。所有測試只用新建 fixture，既有 `.stackey/node` 和 agent 身分不自動搬移或重新核准。
 
 ## 從新目錄開始
 
@@ -72,7 +72,7 @@ node dist/src/cli.js run demo.orders.read --from 2026-09-26 --to 2026-10-02 \
 
 可選取 `wallet create` 回傳的另一個 wallet ID；先在該 wallet 連接 demo，再核准。Grant 的 wallet 與 Owner 簽章綁定；每個配對仍只有一個任務 Grant。Demo connections 是同一份本機合成訂單的資源引用，沒有各自的外部帳號或真實付款。
 
-Connection 可保管 Supabase／Vercel／Stripe config，但本階段尚未執行這些 provider；它們的 key 與 config 不出現在清單中。請依後續服務指南驗收，不能把 config 入庫算作完成整合。
+Connection 可連接 Supabase 訂單唯讀、Vercel AI Gateway 模型生成與 Stripe 測試付款唯讀；key 與 config 不出現在清單中。設定及實際驗收見 [CLI 服務整合指南](CLI_INTEGRATIONS.md)。MPP 的真實商家收款驗收另有帳號與部署前置條件。
 
 ## 鎖定、撤銷、備份與復原
 

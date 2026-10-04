@@ -13,5 +13,5 @@
     "noUnusedParameters": true,
     "skipLibCheck": true
   },
-  "include": ["src/**/*.ts", "test/**/*.ts"]
+  "include": ["src/**/*.ts", "test/**/*.ts", "api/**/*.ts", "scripts/**/*.ts"]
 }
