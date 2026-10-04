@@ -2,6 +2,7 @@
 import { existsSync, lstatSync, unlinkSync, rmdirSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
+import { randomUUID } from 'node:crypto';
 import { parseArgs } from 'node:util';
 import { connect, localStatus } from './client.js';
 import { AppError, envelope, publicError, record, textField } from './contracts.js';
@@ -27,12 +28,12 @@ const help = `Stackey — local agent authorization demo
   stackey vault recover-session [--vault-dir ...]
   stackey vault backup --out <new-private-file> [--vault-dir ...]
   stackey vault restore --backup-file <private-file> --recovery-file <private-file> [--vault-dir <new-dir>]
-  stackey wallet list | create --name <name> [--vault-dir ...]
+  stackey wallet list | create --name <name> [--vault-dir ...] [--request-id <uuid>]
   stackey credential list --wallet <id> [--vault-dir ...]
-  stackey credential import --wallet <id> --name <name> --kind password|api_key|private_key --secret-file <private-JSON-file> [--vault-dir ...]
+  stackey credential import --wallet <id> --name <name> --kind password|api_key|private_key --secret-file <private-JSON-file> [--vault-dir ...] [--request-id <uuid>]
   stackey credential remove <credential-id> [--vault-dir ...]
   stackey connection list --wallet <id> [--vault-dir ...]
-  stackey connection add --wallet <id> --name <name> --provider demo|supabase|vercel|stripe --config-file <private-JSON-file> [--vault-dir ...]
+  stackey connection add --wallet <id> --name <name> --provider demo|supabase|vercel|stripe --config-file <private-JSON-file> [--vault-dir ...] [--request-id <uuid>]
   stackey link login | finish | cancel --wallet <id> [--vault-dir ...]
   stackey node init [--data-dir .stackey/node]
   stackey node start [--data-dir .stackey/node] [--port 45820]
@@ -61,6 +62,7 @@ All results are JSON. --json is accepted for compatibility.
 Loopback only. Provider credentials stay in the vault. Stripe adapters are test mode only.
 Provider operations return operation_pending; poll the same operation ID.
 After Link approval, repeat the same MPP operation ID to resume, never a new one.
+Owner mutations that time out return result_unknown; retry the same --request-id or list first.
 Private state belongs to the execution environment, not an individual Bot.
 `;
 
@@ -82,6 +84,7 @@ async function main() {
       'backup-file': { type: 'string' }, 'secret-file': { type: 'string' }, wallet: { type: 'string' },
       connection: { type: 'string' }, 'max-calls': { type: 'string' }, 'max-amount-minor': { type: 'string' }, prompt: { type: 'string' },
       kind: { type: 'string' }, provider: { type: 'string' }, 'config-file': { type: 'string' },
+      'request-id': { type: 'string' },
       port: { type: 'string' }, ttl: { type: 'string' }, name: { type: 'string' },
       after: { type: 'string' },
       json: { type: 'boolean' },
@@ -140,6 +143,7 @@ async function main() {
     else throw new AppError('unknown_command','Use --help for wallet commands.');
     if(positionals.length!==(command==='credential' && subcommand==='remove'?3:2)) throw new AppError('invalid_arguments','Unexpected wallet arguments.');
     if(subcommand==='list' && values.after!==undefined) args.after=textField(values.after,64);
+    if(['wallet.create','credential.import','connection.add'].includes(`${command}.${subcommand}`)) args.request_id=values['request-id']??randomUUID();
     output(envelope('ok',await vaultRequest(vaultDir,command+'.'+subcommand,args))); return;
   }
   if (command === 'node') {

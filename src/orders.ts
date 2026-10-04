@@ -12,8 +12,9 @@ export const ORDER_SCHEMA = {
   result: { fields: ['id', 'created_at', 'currency', 'amount_minor', 'payment_status'], amount_unit: 'minor', timezone: 'UTC' },
 };
 
-export function initializeDemo(store: Store): void {
+export function initializeDemo(store: Store, guard?: (store: Store) => void): void {
   store.transaction(() => {
+    guard?.(store);
     const insert = store.db.prepare('INSERT OR IGNORE INTO demo_orders VALUES (?, ?, ?, ?, ?)');
     for (let day = 0; day < 7; day++) {
       const date = `2026-${day < 5 ? '09' : '10'}-${String(day < 5 ? 26 + day : day - 4).padStart(2, '0')}`;

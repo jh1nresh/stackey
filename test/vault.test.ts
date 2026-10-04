@@ -15,6 +15,7 @@ import { loadIdentity, writePrivateJson } from '../src/identity.js';
 import { startNode } from '../src/node.js';
 import { ACTION } from '../src/orders.js';
 import { issueInvitation } from '../src/pairing.js';
+import { seconds } from '../src/policy.js';
 import { Store } from '../src/store.js';
 import { backupVault, initializeVault, openVault, recovery, restoreVault } from '../src/vault.js';
 import { vaultRequest } from '../src/vault-client.js';
@@ -127,4 +128,44 @@ test('binding a restored backup to the previous Node invalidates old grants inst
   const bound=await vaultRequest(restoredDir,'node.bind',f.ownerArgs);assert.equal(bound.invalidated_grants,1);
   assert.ok(f.store.db.prepare('SELECT revoked_at FROM grants WHERE grant_id=?').get(grant.grant_id)!.revoked_at);
   await assert.rejects(resourceRequest(context,token,'GET','/v1/capabilities'),error=>error instanceof AppError&&error.code==='grant_revoked');
+});
+test('after a second vault binds, the older unlocked session cannot approve grants against the Node',async t=>{
+  const f=await fixture(t);const dir=join(f.root,'agent');await connect(await issueInvitation(f.store,f.identity,300),dir,'Agent');const context=await agentContext(dir);
+  const backup=join(f.root,'backup.json');backupVault(f.vaultDir,backup);const restoredDir=join(f.root,'restored');
+  await restoreVault(restoredDir,backup,await recovery(f.recoveryFile));
+  const newer=await unlockVault(restoredDir,f.recoveryFile,f.nodeDir);t.after(()=>newer.close());
+  await vaultRequest(restoredDir,'node.bind',f.ownerArgs);
+  await assert.rejects(vaultRequest(f.vaultDir,'grant.approve',{...f.ownerArgs,pairing_id:context.pairingId,principal:context.identity.id,action:ACTION,ttl:900,wallet_id:'wallet_demo'}),error=>error instanceof AppError&&error.code==='node_locked');
+  const grant=await vaultRequest(restoredDir,'grant.approve',{...f.ownerArgs,pairing_id:context.pairingId,principal:context.identity.id,action:ACTION,ttl:900,wallet_id:'wallet_demo'});
+  assert.ok(grant.grant_id);assert.equal(f.store.db.prepare('SELECT value FROM settings WHERE key=\'bound_vault_id\'').get()!.value,newer.vaultId);
+});
+test('re-unlocking a bound vault restores Node access without repeating owner-init',async t=>{
+  const f=await fixture(t);const dir=join(f.root,'agent');await connect(await issueInvitation(f.store,f.identity,300),dir,'Agent');const context=await agentContext(dir);
+  await vaultRequest(f.vaultDir,'grant.approve',{...f.ownerArgs,pairing_id:context.pairingId,principal:context.identity.id,action:ACTION,ttl:900,wallet_id:'wallet_demo'});
+  assert.equal((await runOrders(dir,ACTION,{from:'2026-09-26',to:'2026-10-02'})).status,'ok');
+  await f.vault.close();
+  await assert.rejects(session(context),error=>error instanceof AppError&&error.code==='node_locked');
+  const again=await unlockVault(f.vaultDir,f.recoveryFile,f.nodeDir);t.after(()=>again.close());
+  assert.equal(f.store.db.prepare("SELECT value FROM settings WHERE key='vault_unlocked'").get()!.value,'1');
+  assert.equal((await runOrders(dir,ACTION,{from:'2026-09-26',to:'2026-10-02'})).status,'ok');
+});
+test('timed-out owner mutations return result_unknown and the same request_id does not create a duplicate',async t=>{
+  const f=await fixture(t);await f.vault.close();
+  let release!:()=>void;const hold=new Promise<void>(resolve=>{release=resolve;});let waiting=0;
+  const vault=await unlockVault(f.vaultDir,f.recoveryFile,f.nodeDir,900,seconds,async()=>{waiting++;if(waiting===1)await hold;});
+  t.after(()=>vault.close());
+  const id=randomUUID();
+  const pending=vaultRequest(f.vaultDir,'wallet.create',{name:'Research',request_id:id},30);
+  await new Promise<void>(resolve=>{const timer=setInterval(()=>{if(waiting>0){clearInterval(timer);resolve();}},5);});
+  await assert.rejects(pending,error=>error instanceof AppError&&error.code==='result_unknown'&&error.status==='result_unknown'&&error.exitCode===4);
+  release();
+  const replay=await vaultRequest(f.vaultDir,'wallet.create',{name:'Research',request_id:id});
+  assert.equal(replay.name,'Research');
+  const listed=await vaultRequest(f.vaultDir,'wallet.list');
+  assert.equal(listed.wallets.filter((wallet:{name:string})=>wallet.name==='Research').length,1);
+  await assert.rejects(vaultRequest(f.vaultDir,'wallet.create',{name:'Other',request_id:id}),error=>error instanceof AppError&&error.code==='operation_conflict');
+});
+test('an unavailable vault session is still node_locked, not result_unknown',async t=>{
+  const f=await fixture(t);await f.vault.close();
+  await assert.rejects(vaultRequest(f.vaultDir,'wallet.create',{name:'Research'}),error=>error instanceof AppError&&error.code==='node_locked');
 });

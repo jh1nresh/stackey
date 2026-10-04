@@ -37,7 +37,7 @@ async function ownerKey(store: Store) {
 }
 
 export async function approvePairing(store: Store, node: Identity, owner: Identity,
-  pairingId: string, principal: string, action: string, ttl: number, clock = seconds, walletId = WALLET, scope?: { connection_id: string; max_calls: number; max_amount_minor: number }) {
+  pairingId: string, principal: string, action: string, ttl: number, clock = seconds, walletId = WALLET, scope?: { connection_id: string; max_calls: number; max_amount_minor: number }, guard?: (store: Store) => void) {
   if (action !== ACTION && (!providerAction(action) || !scope)) denied('action_not_available', 'Select a supported action and connection.');
   const connectionId = scope?.connection_id ?? CONNECTION;
   const resource = scope ? resourceFor(action, connectionId) : RESOURCE;
@@ -65,6 +65,7 @@ export async function approvePairing(store: Store, node: Identity, owner: Identi
   });
   if (checked.payload.sub !== principal) denied('invalid_grant', 'Grant signer verification failed.');
   store.transaction(() => {
+    guard?.(store);
     const current = clock();
     if (current >= now + ttl) denied('grant_expired', 'Grant expired before acceptance.');
     if (store.db.prepare('SELECT 1 FROM grants WHERE pairing_id = ?').get(pairingId)) {
@@ -112,7 +113,7 @@ export async function verifyGrant(store: Store, node: Identity, row: Grant, now:
   } catch { denied('invalid_grant', 'Owner grant could not be verified.'); }
 }
 
-export async function revokeGrant(store: Store, node: Identity, owner: Identity, grantId: string, clock = seconds) {
+export async function revokeGrant(store: Store, node: Identity, owner: Identity, grantId: string, clock = seconds, guard?: (store: Store) => void) {
   const pinned = await ownerKey(store);
   if (owner.id !== pinned.id) denied('owner_mismatch', 'Owner signer does not match this Node.');
   const row = store.db.prepare('SELECT * FROM grants WHERE grant_id = ?').get(grantId) as unknown as Grant | undefined;
@@ -127,6 +128,7 @@ export async function revokeGrant(store: Store, node: Identity, owner: Identity,
     currentDate: new Date(clock() * 1000),
   });
   store.transaction(() => {
+    guard?.(store);
     const current = clock();
     if (current >= now + 30) denied('invalid_owner_proof', 'Owner confirmation expired before acceptance.');
     const changed = store.db.prepare('UPDATE grants SET revoked_at = ?, version = version + 1, signed_revocation = ? WHERE grant_id = ? AND version = ? AND revoked_at IS NULL')

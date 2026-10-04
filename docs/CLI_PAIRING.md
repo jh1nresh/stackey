@@ -11,7 +11,7 @@
 - Agent client：`src/client.ts`，驗證可信 invitation 和 Node receipt，記錄本機配對狀態。
 - 驗證：`test/pairing.test.ts`，使用 task 自建、獨立的臨時目錄與程序；關閉 Node 後清理自身 fixtures。
 
-完整重現命令見 [README](../README.md#本機執行第一步)。`node invite`／`node pairings` 是本機檔案管理操作，agent HTTP API 沒有對應管理路由。
+完整重現命令見 [Local Setup: Step One](../README.md#local-setup-step-one)。`node invite`／`node pairings` 是本機檔案管理操作，agent HTTP API 沒有對應管理路由。
 
 ## 接入流程
 

@@ -129,7 +129,7 @@ MPP config：
 {"mode":"mpp","credential_id":"credential_LINK_ID","endpoint":"https://YOUR-PREVIEW.vercel.app/api/paid-report","network_id":"profile_test_YOUR_ID","payment_method_id":"pm_YOUR_ID","amount_minor":50}
 ```
 
-只接受單一 `.vercel.app` HTTPS hostname、固定 `/api/paid-report`、test profile、USD 50–1000 cents，禁止任意目的地或 agent 改价。以 `stripe.mpp.pay` 核准 connection，`--max-calls 1 --max-amount-minor 50`。一次 grant 支援一次付款；保守保留整份付款預算，不因失敗或待核准自動釋放。
+只接受單一 `.vercel.app` HTTPS hostname、固定 `/api/paid-report`、test profile、USD 50 cents（商家固定價格），禁止任意目的地或 agent 改价。以 `stripe.mpp.pay` 核准 connection，`--max-calls 1 --max-amount-minor 50`。一次 grant 支援一次付款；保守保留整份付款預算，不因失敗或待核准自動釋放。
 
 ```bash
 node dist/src/cli.js run stripe.mpp.pay --operation-id SAME_UUID --state-dir .stackey/agents/buyer
