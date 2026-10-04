@@ -53,14 +53,14 @@ node dist/src/cli.js run demo.orders.read \
 
 ## 身分與傳輸契約
 
-- Node 與 Owner signer 採不同 Ed25519 身分。Owner 私鑰位於指定 owner directory；SQLite 只保存 owner 公鑰、簽署後 Grant／撤銷材料。這是私有本機檔案管理通道，沒有任何 HTTP owner 管理路由。
+- Node 與 Owner signer 採不同 Ed25519 身分。Owner 私鑰位於指定 owner directory；SQLite 只保存 owner 公鑰、簽署後 Grant／撤銷材料。原 CLI 使用私有本機檔案管理通道。`wallet start` 可另外啟動獨立 loopback 管理 listener，使用一小時的啟動憑證、精確 Host、Origin 與 Fetch Metadata 檢查；agent listener 不提供管理路由。Owner 初始化仍只可由 CLI 執行。
 - Owner 簽章 Grant 綁定 pairing、subject、Node audience、固定 Wallet／Connection／資源／action、期限與 policy version。每次服務請求驗證簽章與當前持久化政策。
 - `POST /v1/challenges` 發出 30 秒、一次性 nonce。CLI 驗證 Node 簽署的回應；回應綁定新 request ID 的 body hash，不能把舊 challenge 回應作為新回應。
 - `GET /v1/pairings/:id` 與 `POST /v1/sessions` 使用 `stackey-request+jwt`（jose ES256）。綁定 method／完整 URI／body hash、nonce、jti、Node audience、Principal。這是 Stackey bootstrap，不是 OAuth token grant endpoint。
 - Session 為 Node 簽署的 `at+jwt`，最長 60 秒且不晚於 Grant 到期，綁定 `cnf.jkt`、Node issuer／audience、Principal、Grant ID 與版本。CLI 只在記憶體使用，不將 token 印到 stdout 或寫入 agent receipt。
 - `GET /v1/capabilities`、`POST /v1/operations`、`GET /v1/operations/:id` 採 [oauth4webapi](https://github.com/panva/oauth4webapi) 3.8.8 生成／驗證 RFC 9449 DPoP 與 JWT access token。固定 proof ES256／token EdDSA，檢查 method、URI、ath、key binding、時間與持久化 nonce／jti。Stackey 額外用受簽章的 `stackey_body_hash` 綁定完整 body，縮小有效時間為 30 秒。
 - Node 驗證 token 的 JWKS 是本機固定的 Node 公鑰，無外部 JWKS fetch。CLI 驗證 Node 簽署的業務／錯誤回應，且回應綁定當次 proof hash。
-- 目前只允許 literal `http://127.0.0.1:<port>`。這是本機傳輸例外，不代表已完成標準的 HTTPS 遠端部署或完整 OAuth authorization server。
+- 現在允許 literal `http://127.0.0.1:<port>` 與 canonical public HTTPS origin；遠端傳輸檢查公開 DNS 位址、TLS 和固定 Node 公鑰。這不代表正式部署或完整 OAuth authorization server。見 [Cloud demo](CLOUD_DEMO.md)。
 
 ## 政策、結果與持久化
 
@@ -74,8 +74,8 @@ Owner `node grants`／`node events` 每頁最多 200 筆，提供 `next_cursor` 
 
 ## 限制與驗證
 
-Owner／Node／agent key 仍是未加密的 0600 私有檔案。同 OS 使用者若能讀 owner／Node 目錄，就能使用本機管理能力；此版不能把有完整 shell／檔案權限的 agent 視為隔離使用者。強 runtime 隔離、OS signer、助記詞與 vault 加密仍待實作，勿用正式秘密測試。
+Owner／Node／agent key 仍是未加密的 0600 私有檔案。同 OS 使用者若能讀 owner／Node 目錄，就能使用本機管理能力；此版不能把有完整 shell／檔案權限的 agent 視為隔離使用者。助記詞與加密 Vault 已有獨立流程，見 [CLI_VAULT.md](CLI_VAULT.md)；強 runtime 隔離與 OS signer 仍待實作，勿用正式秘密測試。
 
-此版沒有錢包 UI、Supabase／Vercel／Stripe／MPP、HTTPS／遠端 Grok Bot 或對外服務副作用。只有明確標示的本機合成訂單，可先完成授權流程，再換成正式 adapter。
+目前已有本機錢包 UI、HTTPS Agent 連線與可讀日報；正式 Grok Bot 執行環境仍待使用者測試。此錢包 demo 使用明確標示的本機合成訂單；既有 CLI 服務 adapter 狀態見 [CLI_INTEGRATIONS.md](CLI_INTEGRATIONS.md)，此介面不自動核准服務或付款操作。
 
 驗證使用 `npm run typecheck`、`npm test`。包含真實 owner／agent CLI、資料 ground truth、雙 agent、舊 session 撤銷／重啟、proof replay／時間／URI／body 綁定、owner 簽章／scope、分頁、immutable operation 及 CLI 不輸出秘密的正反案例。

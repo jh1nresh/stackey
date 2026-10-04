@@ -1,3 +1,4 @@
+import { nodeFetch } from './transport.js';
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { importJWK, jwtVerify } from 'jose';
@@ -15,10 +16,9 @@ export async function connect(invitation: string, dir: string, name: string) {
   const { proof, jti } = await makePairingProof(invite, identity, name);
   let response: Response;
   try {
-    response = await fetch(invite.endpoint + '/v1/pairings', {
+    response = await nodeFetch(invite.endpoint + '/v1/pairings', {
       method: 'POST', headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ invitation: invite.token, proof }),
-      redirect: 'error', signal: AbortSignal.timeout(5000),
     });
   } catch {
     throw new AppError('pairing_result_unknown', 'Pairing could not be confirmed. Check the Node pairing list before attempting another invitation.', 503, 4, 'result_unknown');

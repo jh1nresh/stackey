@@ -45,16 +45,19 @@ export function digest(value: string): string {
   return createHash('sha256').update(value).digest('base64url');
 }
 
-// Step one deliberately supports literal IPv4 loopback only. No remote URLs,
-// redirects, credentials, custom paths or DNS-based localhost resolution.
+// Canonical origins only: local loopback HTTP or remote HTTPS. Remote transport
+// additionally resolves and pins a public address before opening a connection.
 export function endpoint(value: unknown): string {
-  const raw = textField(value, 100);
+  const raw = textField(value, 300);
   let url: URL;
   try { url = new URL(raw); } catch { invalid('invalid_endpoint', 'Invalid Node endpoint.'); }
-  if (url.protocol !== 'http:' || url.hostname !== '127.0.0.1' ||
-      !url.port || url.username || url.password || url.pathname !== '/' ||
+  const local = url.protocol === 'http:' && url.hostname === '127.0.0.1' && !!url.port;
+  const remote = url.protocol === 'https:' && !url.hostname.includes(':') &&
+    !/^[\d.]+$/.test(url.hostname) && url.hostname.includes('.') &&
+    !/(?:^|\.)(?:localhost|local|internal|home|test|invalid|example)$/.test(url.hostname);
+  if ((!local && !remote) || url.username || url.password || url.pathname !== '/' ||
       url.search || url.hash || raw !== url.origin) {
-    invalid('invalid_endpoint', 'This milestone only supports http://127.0.0.1:<port>.');
+    invalid('invalid_endpoint', 'Use a canonical loopback HTTP or public HTTPS origin.');
   }
   return url.origin;
 }
