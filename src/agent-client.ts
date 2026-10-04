@@ -1,11 +1,12 @@
+import { nodeFetch } from './transport.js';
 import { randomUUID, type webcrypto } from 'node:crypto';
 import { join } from 'node:path';
 import { importJWK, jwtVerify, SignJWT } from 'jose';
 import * as oauth from 'oauth4webapi';
-import { BOOTSTRAP_TYPE, issuer, isUuid, RESPONSE_TYPE } from './access.js';
+import { BOOTSTRAP_TYPE, issuer, isUuid, RESPONSE_TYPE } from './agent-protocol.js';
 import { AppError, digest, endpoint, record, textField } from './contracts.js';
 import { loadIdentity, publicKey, readPrivateJson, type Identity } from './identity.js';
-import { providerAction, providerParams } from './providers.js';
+import { providerAction, providerParams } from './provider-contracts.js';
 import { ACTION, orderParams } from './orders.js';
 
 export async function agentContext(dir: string) {
@@ -56,8 +57,8 @@ export async function verifiedResponse(context: AgentContext, response: Response
 
 async function plain(context: AgentContext, path: string, body: string, headers: Record<string, string> = {}) {
   try {
-    return await fetch(context.origin + path, { method: 'POST', headers: { 'content-type': 'application/json', ...headers },
-      body, redirect: 'error', signal: AbortSignal.timeout(5000) });
+    return await nodeFetch(context.origin + path, { method: 'POST', headers: { 'content-type': 'application/json', ...headers },
+      body });
   } catch { throw new AppError('node_unreachable', 'Node did not confirm the request.', 503, 4, 'node_unreachable'); }
 }
 
@@ -81,7 +82,7 @@ export async function bootstrapRequest(context: AgentContext, method: string, pa
   let response: Response;
   if (method === 'POST') response = await plain(context, path, body, { 'x-stackey-proof': proof });
   else {
-    try { response = await fetch(context.origin + path, { headers: { 'x-stackey-proof': proof }, redirect: 'error', signal: AbortSignal.timeout(5000) }); }
+    try { response = await nodeFetch(context.origin + path, { headers: { 'x-stackey-proof': proof } }); }
     catch { throw new AppError('node_unreachable', 'Node did not confirm the request.', 503, 4, 'node_unreachable'); }
   }
   return verifiedResponse(context, response, digest(proof));
@@ -116,8 +117,8 @@ export async function resourceRequest(context: AgentContext, token: string, meth
       { DPoP: handle, [oauth.allowInsecureRequests]: true,
         [oauth.customFetch]: async (url, options) => {
           proof = new Headers(options.headers).get('dpop')!;
-          return fetch(url, { method: options.method, headers: options.headers,
-            ...(method === 'POST' ? { body } : {}), redirect: 'error', signal: AbortSignal.timeout(5000) });
+          return nodeFetch(url, { method: options.method, headers: options.headers,
+            ...(method === 'POST' ? { body } : {}) });
         } });
   } catch { throw new AppError('node_unreachable', 'Node did not confirm the request.', 503, 4, 'node_unreachable'); }
   return verifiedResponse(context, response, digest(proof));

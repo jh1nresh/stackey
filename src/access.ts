@@ -10,10 +10,8 @@ import { consumeProof, denied, event, grantForPairing, proofTime, requireGrant, 
 import { dispatchProviderOperation } from './provider-operations.js';
 import type { Store } from './store.js';
 
-export const BOOTSTRAP_TYPE = 'stackey-request+jwt';
-export const RESPONSE_TYPE = 'stackey-response+jwt';
-export const issuer = (nodeId: string) => `urn:stackey:node:${nodeId}`;
-export const isUuid = (value: string) => /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(value);
+import { BOOTSTRAP_TYPE, RESPONSE_TYPE, issuer, isUuid } from './agent-protocol.js';
+export { BOOTSTRAP_TYPE, RESPONSE_TYPE, issuer, isUuid } from './agent-protocol.js';
 
 export async function signedResponse(node: Identity, body: unknown, requestHash: string, now: number) {
   return new SignJWT({ body, request_hash: requestHash })

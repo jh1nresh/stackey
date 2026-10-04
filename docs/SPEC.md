@@ -1,6 +1,6 @@
 # Stackey 產品與技術規格 v0.9
 
-日期：2026-10-03。狀態：完整產品規格；本機 CLI 配對、Owner 核准、DPoP session、合成訂單操作、撤銷，以及 seed-backed 保險箱、多錢包、加密憑證與備份復原已有實作。本文作為現行產品契約；實際範圍與 wire format 見 [CLI_PAIRING.md](CLI_PAIRING.md) 與 [CLI_AUTHORIZATION.md](CLI_AUTHORIZATION.md)。本機操作為 `demo.orders.read`，資料來源 `local_synthetic`；保險箱格式與操作見 [CLI_VAULT.md](CLI_VAULT.md)。Supabase adapter、雲端、付款與完整 demo 仍待實作／驗證。
+日期：2026-10-03。狀態：完整產品規格；本機 CLI 配對、Owner 核准、DPoP session、合成訂單操作、撤銷，以及 seed-backed 保險箱、多錢包、加密憑證與備份復原已有實作；本機錢包介面已接上邀請、核准、撤銷、憑證查看與活動查看；另支援設定／復原、public HTTPS Agent origin 與本機合成訂單日報，獨立安全審查仍待完成。本文作為現行產品契約；實際範圍與 wire format 見 [CLI_PAIRING.md](CLI_PAIRING.md) 與 [CLI_AUTHORIZATION.md](CLI_AUTHORIZATION.md)。本機操作為 `demo.orders.read`，資料來源 `local_synthetic`；保險箱格式與操作見 [CLI_VAULT.md](CLI_VAULT.md)。CLI 服務 adapter 狀態見 [CLI_INTEGRATIONS.md](CLI_INTEGRATIONS.md)，public HTTPS 與合成訂單日報見 [CLOUD_DEMO.md](CLOUD_DEMO.md)；正式雲端部署、真實 Grok 執行與完整付款 demo 仍待驗證。
 
 ## 1. 定位與問題
 
