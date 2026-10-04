@@ -10,14 +10,14 @@ import { validateMnemonic } from '@scure/bip39';
 import { wordlist } from '@scure/bip39/wordlists/english.js';
 import { agentContext, runOrders, session, resourceRequest } from '../src/agent-client.js';
 import { connect } from '../src/client.js';
-import { AppError } from '../src/contracts.js';
+import { AppError, digest } from '../src/contracts.js';
 import { loadIdentity, writePrivateJson } from '../src/identity.js';
 import { startNode } from '../src/node.js';
 import { ACTION } from '../src/orders.js';
 import { issueInvitation } from '../src/pairing.js';
 import { seconds } from '../src/policy.js';
 import { Store } from '../src/store.js';
-import { backupVault, initializeVault, openVault, recovery, restoreVault } from '../src/vault.js';
+import { backupVault, initializeVault, openVault, recovery, restoreVault, VAULT_REQUESTS_CAP } from '../src/vault.js';
 import { vaultRequest } from '../src/vault-client.js';
 import { unlockVault } from '../src/vault-session.js';
 const cli=resolve('dist/src/cli.js');
@@ -182,6 +182,28 @@ test('request_id replay for wallet, credential and connection survives lock and 
   await assert.rejects(vaultRequest(f.vaultDir,'wallet.create',{name:'Other',request_id:walletId}),error=>error instanceof AppError&&error.code==='operation_conflict');
   await assert.rejects(vaultRequest(f.vaultDir,'credential.import',{wallet_id:wallet.id,name:'Other',kind:'api_key',value:'fixture-token',request_id:credentialId}),error=>error instanceof AppError&&error.code==='operation_conflict');
   await assert.rejects(vaultRequest(f.vaultDir,'connection.add',{wallet_id:wallet.id,name:'Other',provider:'demo',config:{},request_id:connectionId}),error=>error instanceof AppError&&error.code==='operation_conflict');
+});
+test('request replay evicts the oldest record once the vault cap is full',async t=>{
+  const f=await fixture(t);
+  const oldest=randomUUID();
+  const first=await vaultRequest(f.vaultDir,'wallet.create',{name:'Oldest',request_id:oldest});
+  await f.vault.close();
+  const opened=await openVault(f.vaultDir,await recovery(f.recoveryFile));
+  assert.equal(opened.data.requests[0]!.request_id,oldest);
+  while(opened.data.requests.length<VAULT_REQUESTS_CAP){
+    opened.data.requests.push({request_id:randomUUID(),fingerprint:digest(`pad-${opened.data.requests.length}`),result:{id:'wallet_'+randomUUID()}});
+  }
+  opened.save(opened.data);opened.close();
+  const again=await unlockVault(f.vaultDir,f.recoveryFile,f.nodeDir);t.after(()=>again.close());
+  const newer=randomUUID();
+  const created=await vaultRequest(f.vaultDir,'wallet.create',{name:'AfterCap',request_id:newer});
+  assert.equal(created.name,'AfterCap');assert.notEqual(created.id,first.id);
+  assert.equal((await vaultRequest(f.vaultDir,'wallet.list')).wallets.filter((row:{name:string})=>row.name==='AfterCap').length,1);
+  const persisted=await openVault(f.vaultDir,await recovery(f.recoveryFile));
+  assert.equal(persisted.data.requests.length,VAULT_REQUESTS_CAP);
+  assert.equal(persisted.data.requests.some(row=>row.request_id===oldest),false);
+  assert.equal(persisted.data.requests.some(row=>row.request_id===newer),true);
+  persisted.close();
 });
 test('an unavailable vault session is still node_locked, not result_unknown',async t=>{
   const f=await fixture(t);await f.vault.close();

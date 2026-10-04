@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 
 // Flags from @stripe/link-cli@0.25.1 packages/cli/src/commands/spend-request/{index,schema}.tsx.
 // request-approval registers only args.id. interval / max-attempts are retrieve options.
-const createFlags = new Set([
+export const createFlags = new Set([
   '--idempotency-key', '--payment-method-id', '--credential-type', '--network-id',
   '--execution-method', '--merchant-account-id', '--amount', '--currency',
   '--merchant-name', '--merchant-url', '--context', '--line-item', '--total',

@@ -41,7 +41,7 @@ export async function payMpp(connection: Connection, token: string, operationId:
     check();
     const requested = await link(token, ['spend-request', 'create', '--idempotency-key', `stackey-${operationId}`,
       '--credential-type', 'shared_payment_token', '--network-id', String(connection.config.network_id), '--amount', String(amount),
-      '--currency', 'usd', '--payment-method-id', String(connection.config.payment_method_id), '--test',
+      '--currency', 'usd', '--payment-method-id', String(connection.config.payment_method_id), '--test', '--no-request-approval',
       '--context', `Stackey sandbox purchase for operation ${operationId}: one fixed paid report from ${new URL(endpoint).hostname}. Test mode only; no recurring payment or card data is requested.`]);
     const id = textField(requested.id, 100);
     if (requested.status !== undefined && !['created', 'pending_approval', 'requires_action', 'approved'].includes(String(requested.status))) {
@@ -55,8 +55,8 @@ export async function payMpp(connection: Connection, token: string, operationId:
       return url;
     };
     let url = approvalUrl(requested.approval_url);
-    // Fail-closed: create never pays. @stripe/link-cli@0.25.1 request-approval
-    // accepts only the spend-request id; polling flags belong to retrieve.
+    // Fail-closed: create never pays. 0.25.1 create defaults requestApproval to
+    // true, so pass --no-request-approval and request approval by id only.
     check();
     const submitted = await link(token, ['spend-request', 'request-approval', id]);
     if (submitted.approval_url !== undefined) url = approvalUrl(submitted.approval_url);

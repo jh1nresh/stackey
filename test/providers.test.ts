@@ -12,7 +12,7 @@ import { AppError } from '../src/contracts.js';
 import { loadIdentity } from '../src/identity.js';
 import { createMerchant } from '../src/mpp-merchant.js';
 import { payMpp, type LinkCall, type PaymentContinuation } from '../src/mpp-payment.js';
-import { assertLinkSpendRequestArgs } from './link-cli-schema.js';
+import { assertLinkSpendRequestArgs, createFlags } from './link-cli-schema.js';
 import { startNode } from '../src/node.js';
 import { issueInvitation } from '../src/pairing.js';
 import { drainProviderOperations } from '../src/provider-operations.js';
@@ -30,7 +30,9 @@ const supabase=connection('supabase',{project_ref:'abcdefghijklmnopqrst',credent
 const payment=connection('stripe',{mode:'mpp',endpoint:'https://stackey-sandbox.vercel.app/api/paid-report',network_id:'profile_test_fixture',credential_id:credential,payment_method_id:'pm_fixture',amount_minor:50});
 
 test('Link spend-request mock rejects flags outside the 0.25.1 CLI schema',()=>{
+  assert.ok(createFlags.has('--no-request-approval'));
   assert.doesNotThrow(()=>assertLinkSpendRequestArgs(['spend-request','request-approval','sr_fixture']));
+  assert.doesNotThrow(()=>assertLinkSpendRequestArgs(['spend-request','create','--no-request-approval','--test','--amount','50','--context','x'.repeat(100)]));
   assert.doesNotThrow(()=>assertLinkSpendRequestArgs(['spend-request','retrieve','sr_fixture','--include','shared_payment_token','--interval','0','--max-attempts','1']));
   assert.throws(()=>assertLinkSpendRequestArgs(['spend-request','request-approval','sr_fixture','--interval','0','--max-attempts','1']));
   assert.throws(()=>assertLinkSpendRequestArgs(['spend-request','create','--interval','0']));
@@ -88,7 +90,7 @@ async function merchantFixture(){
 }
 test('real mppx challenge -> Link approval continuation -> SPT payment returns a bound receipt without exposing credentials',async()=>{
   const merchant=await merchantFixture();const operationId=randomUUID();let creates=0;let requested=0;
-  const link=schemaLink(async(token,args)=>{assert.equal(token,'fixture-link-token');if(args[1]==='create'){creates++;assert.ok(args.includes('--test'));assert.ok(!args.includes('--request-approval'));assert.equal(args[args.indexOf('--amount')+1],'50');return {id:'sr_fixture',status:'created'};}
+  const link=schemaLink(async(token,args)=>{assert.equal(token,'fixture-link-token');if(args[1]==='create'){creates++;assert.ok(args.includes('--test'));assert.ok(args.includes('--no-request-approval'));assert.ok(!args.includes('--request-approval'));assert.equal(args[args.indexOf('--amount')+1],'50');return {id:'sr_fixture',status:'created'};}
     if(args[1]==='request-approval'){requested++;assert.deepEqual(args,['spend-request','request-approval','sr_fixture']);return {id:'sr_fixture',status:'pending_approval',approval_url:'https://app.link.com/approve/fixture'};}
     return {id:'sr_fixture',status:'approved',amount:50,currency:'usd',network_id:'profile_test_fixture',credential_type:'shared_payment_token',test:true,shared_payment_token:{id:'spt_fixture_secret'}};
   });

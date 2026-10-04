@@ -8,7 +8,7 @@ import { loadIdentity, readPrivateJson, writePrivateJson } from './identity.js';
 import { initializeDemo } from './orders.js';
 import { approvePairing, initializeOwner, requireGrant, revokeGrant, seconds, verifyGrant } from './policy.js';
 import { Store } from './store.js';
-import { openVault, recovery, type Connection, type Credential } from './vault.js';
+import { openVault, recovery, VAULT_REQUESTS_CAP, type Connection, type Credential, type VaultRequest } from './vault.js';
 import { connectionConfig, executeProvider, integer, providerParams, supports } from './providers.js';
 import { payMpp, type PaymentContinuation } from './mpp-payment.js';
 import { sessionPath } from './vault-client.js';
@@ -48,11 +48,13 @@ export async function unlockVault(dir:string,recoveryFile:string,nodeDir:string,
     return prior.result;
   };
   const remember=(command:string,args:Record<string,unknown>,result:Record<string,unknown>)=>{
-    const id=requestId(args);if(id)vault.data.requests.push({request_id:id,fingerprint:requestFingerprint(command,args),result});
+    const id=requestId(args);if(!id)return [];
+    vault.data.requests.push({request_id:id,fingerprint:requestFingerprint(command,args),result});
+    return vault.data.requests.splice(0,Math.max(0,vault.data.requests.length-VAULT_REQUESTS_CAP));
   };
-  const forget=(args:Record<string,unknown>)=>{
-    const id=requestId(args);if(!id)return;
-    const index=vault.data.requests.findIndex(row=>row.request_id===id);if(index>=0)vault.data.requests.splice(index,1);
+  const forget=(args:Record<string,unknown>,evicted:VaultRequest[]=[])=>{
+    const id=requestId(args);if(id){const index=vault.data.requests.findIndex(row=>row.request_id===id);if(index>=0)vault.data.requests.splice(index,1);}
+    if(evicted.length)vault.data.requests.unshift(...evicted);
   };
   const guard=(store:Store)=>requireBoundVault(store,token,vault.vaultId);
   const setPolicy=(unlocked:boolean)=> {
@@ -87,8 +89,8 @@ export async function unlockVault(dir:string,recoveryFile:string,nodeDir:string,
       exact(['name'],['request_id']);const replay=replayed(command,args);if(replay)return replay;
       const value={id:'wallet_'+randomUUID(),name:displayName(args.name),connections:[]};
       const result={...value,address:`stackey:${vault.owner.id}/${value.id}`};
-      vault.data.wallets.push(value);remember(command,args,result);
-      try{save();}catch(error){vault.data.wallets.pop();forget(args);throw error;}
+      vault.data.wallets.push(value);const evicted=remember(command,args,result);
+      try{save();}catch(error){vault.data.wallets.pop();forget(args,evicted);throw error;}
       return result;
     }
     if(command==='credential.list'){exact(['wallet_id'],['after']);const w=wallet(args.wallet_id);const result=page(vault.data.credentials.filter(c=>c.wallet_id===w.id));return {credentials:result.values.map(({value,...metadata})=>metadata),next_cursor:result.next_cursor,complete:result.complete};}
@@ -98,8 +100,8 @@ export async function unlockVault(dir:string,recoveryFile:string,nodeDir:string,
       if(!['password','api_key','private_key'].includes(String(args.kind)))throw new AppError('invalid_kind','Use password, api_key or private_key.');
       const value:Credential={id:'credential_'+randomUUID(),wallet_id:w.id,name:displayName(args.name),kind:args.kind as Credential['kind'],value:textField(args.value,16384)};
       const metadata={id:value.id,wallet_id:value.wallet_id,name:value.name,kind:value.kind};
-      vault.data.credentials.push(value);remember(command,args,metadata);
-      try{save();}catch(error){vault.data.credentials.pop();forget(args);throw error;}
+      vault.data.credentials.push(value);const evicted=remember(command,args,metadata);
+      try{save();}catch(error){vault.data.credentials.pop();forget(args,evicted);throw error;}
       return metadata;
     }
     if(command==='credential.remove'){exact(['credential_id']);const id=textField(args.credential_id,64);const index=vault.data.credentials.findIndex(c=>c.id===id);if(index<0)throw new AppError('credential_not_found','Credential was not found.');const old=vault.data.credentials.splice(index,1)[0]!;try{save();}catch(error){vault.data.credentials.splice(index,0,old);throw error;}return {credential_id:id,removed:true};}
@@ -110,8 +112,8 @@ export async function unlockVault(dir:string,recoveryFile:string,nodeDir:string,
       if(!['demo','supabase','vercel','stripe'].includes(String(args.provider)))throw new AppError('invalid_provider','Use a supported provider.');
       const value:Connection={id:'connection_'+randomUUID(),wallet_id:w.id,name:displayName(args.name),provider:args.provider as Connection['provider'],config:connectionConfig(args.provider as Connection['provider'],args.config,vault.data,w.id)};
       const metadata={id:value.id,wallet_id:value.wallet_id,name:value.name,provider:value.provider};
-      vault.data.connections.push(value);w.connections.push(value.id);remember(command,args,metadata);
-      try{save();}catch(error){vault.data.connections.pop();w.connections.pop();forget(args);throw error;}
+      vault.data.connections.push(value);w.connections.push(value.id);const evicted=remember(command,args,metadata);
+      try{save();}catch(error){vault.data.connections.pop();w.connections.pop();forget(args,evicted);throw error;}
       return metadata;
     }
     if(command==='provider.execute') {

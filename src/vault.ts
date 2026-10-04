@@ -12,6 +12,7 @@ export interface Credential { id: string; wallet_id: string; name: string; kind:
 export interface Connection { id: string; wallet_id: string; provider: 'demo' | 'supabase' | 'vercel' | 'stripe'; name: string; config: Record<string, unknown> }
 export interface VaultRequest { request_id: string; fingerprint: string; result: Record<string, unknown> }
 export interface VaultData { wallets: Wallet[]; credentials: Credential[]; connections: Connection[]; requests: VaultRequest[] }
+export const VAULT_REQUESTS_CAP = 3000;
 interface Box { iv: string; ciphertext: string; tag: string }
 interface Header { format: 'stackey-vault'; version: 1; vault_id: string; owner: string; salt: string; cipher: 'AES-256-GCM' }
 interface File extends Header { wrapped_key: Box; data: Box }
@@ -81,7 +82,7 @@ function validateData(raw: unknown): VaultData {
     return { id:id(c.id),wallet_id:id(c.wallet_id),provider:c.provider as Connection['provider'],name:displayName(c.name),config:record(c.config) };
   });
   const requests = value.requests===undefined ? [] : (() => {
-    if (!Array.isArray(value.requests) || value.requests.length > 3000) fail();
+    if (!Array.isArray(value.requests) || value.requests.length > VAULT_REQUESTS_CAP) fail();
     return value.requests.map(raw => {
       const r=record(raw); exact(r,['fingerprint','request_id','result']);
       const request_id=textField(r.request_id,36);
