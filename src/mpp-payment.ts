@@ -43,10 +43,24 @@ export async function payMpp(connection: Connection, token: string, operationId:
       '--credential-type', 'shared_payment_token', '--network-id', String(connection.config.network_id), '--amount', String(amount),
       '--currency', 'usd', '--payment-method-id', String(connection.config.payment_method_id), '--test',
       '--context', `Stackey sandbox purchase for operation ${operationId}: one fixed paid report from ${new URL(endpoint).hostname}. Test mode only; no recurring payment or card data is requested.`]);
-    const url = requested.approval_url === undefined ? null : textField(requested.approval_url, 1000);
-    if (url) { const target = new URL(url); if (target.protocol !== 'https:' || !(target.hostname === 'link.com' || target.hostname.endsWith('.link.com'))) throw new AppError('invalid_link_response', 'Unexpected approval destination.'); }
-    continuation = { spend_request_id: textField(requested.id, 100), challenge: Challenge.serialize(challenge), approval_url: url };
-    // Persist the public continuation before any terminal payment attempt.
+    const id = textField(requested.id, 100);
+    if (requested.status !== undefined && !['created', 'pending_approval', 'requires_action', 'approved'].includes(String(requested.status))) {
+      throw new AppError('payment_not_approved', 'Link declined or closed this payment request.');
+    }
+    const approvalUrl = (value: unknown) => {
+      if (value === undefined || value === null) return null;
+      const url = textField(value, 1000);
+      const target = new URL(url);
+      if (target.protocol !== 'https:' || !(target.hostname === 'link.com' || target.hostname.endsWith('.link.com'))) throw new AppError('invalid_link_response', 'Unexpected approval destination.');
+      return url;
+    };
+    let url = approvalUrl(requested.approval_url);
+    // Fail-closed: create never pays. Request approval without polling so the
+    // owner can act; do not treat an auto-approved create as a completed payment.
+    check();
+    const submitted = await link(token, ['spend-request', 'request-approval', id, '--interval', '0', '--max-attempts', '1']);
+    if (submitted.approval_url !== undefined) url = approvalUrl(submitted.approval_url);
+    continuation = { spend_request_id: id, challenge: Challenge.serialize(challenge), approval_url: url };
     return { state: 'approval_required', result: { ...continuation, source: 'stripe_mpp_test', amount_minor: amount, currency: 'USD' } };
   }
   const challenge = Challenge.deserialize(continuation.challenge);

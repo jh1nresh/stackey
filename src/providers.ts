@@ -36,7 +36,7 @@ export function connectionConfig(provider: Connection['provider'], raw: unknown,
         throw new AppError('invalid_merchant', 'Use a fixed Vercel HTTPS /api/paid-report endpoint.');
       }
       if (!/^profile_test_[A-Za-z0-9]+$/.test(textField(config.network_id, 100)) || !/^pm_[A-Za-z0-9]+$/.test(textField(config.payment_method_id, 100))) throw new AppError('test_mode_required', 'Select a Stripe test profile and payment method.');
-      integer(config.amount_minor, 50, 1000);
+      integer(config.amount_minor, 50, 50);
     }
   }
   return { ...config };

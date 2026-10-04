@@ -5,7 +5,16 @@ import { AppError, record, textField } from './contracts.js';
 import { readPrivateJson } from './identity.js';
 
 export const sessionPath = (dir: string) => join(dir,'session.json');
-export async function vaultRequest(dir: string, command: string, args: Record<string,unknown> = {}) {
+function timeoutError(command: string, args: Record<string,unknown>) {
+  const subject = command.split('.')[0];
+  const requestId = typeof args.request_id === 'string' ? args.request_id : undefined;
+  return new AppError('result_unknown',
+    requestId
+      ? `Vault did not confirm this ${command} in time. Retry the same request_id ${requestId} or list existing ${subject}s before creating another.`
+      : `Vault did not confirm this ${command} in time. List existing ${subject}s before creating another.`,
+    504, 4, 'result_unknown');
+}
+export async function vaultRequest(dir: string, command: string, args: Record<string,unknown> = {}, timeoutMs?: number) {
   let state:Record<string,unknown>;
   try { state=record(readPrivateJson(sessionPath(dir))); }
   catch { throw new AppError('node_locked','Unlock the vault first.',403,3,'node_locked'); }
@@ -14,7 +23,9 @@ export async function vaultRequest(dir: string, command: string, args: Record<st
   if(!stat.isSocket() || stat.uid!==process.getuid?.() || (stat.mode&0o077)!==0) throw new AppError('unsafe_session','Vault session socket must be private.');
   const payload=JSON.stringify({command,args});
   if(Buffer.byteLength(payload)>65536) throw new AppError('request_too_large','Vault request exceeds 64 KiB.');
+  const timeout = timeoutMs ?? (command==='provider.execute'?45000:2000);
   return new Promise<any>((resolve,reject)=> {
+    let timedOut=false;
     const pending=request({socketPath:socket,path:'/owner',method:'POST',headers:{authorization:'Bearer '+token,'content-type':'application/json','content-length':Buffer.byteLength(payload)}},response=> {
       const chunks:Buffer[]=[];let size=0;
       response.on('data',chunk=> {size+=chunk.length;if(size>131072){pending.destroy();reject(new AppError('invalid_response','Vault response exceeded its limit.'));}else chunks.push(chunk);});
@@ -26,8 +37,8 @@ export async function vaultRequest(dir: string, command: string, args: Record<st
         }catch{reject(new AppError('invalid_response','Vault returned an invalid response.'));}
       });
     });
-    pending.setTimeout(command==='provider.execute'?45000:2000,()=>pending.destroy());
-    pending.on('error',()=>reject(new AppError('node_locked','Vault session is unavailable. Unlock it again.',403,3,'node_locked')));
+    pending.setTimeout(timeout,()=>{timedOut=true;pending.destroy();reject(timeoutError(command,args));});
+    pending.on('error',()=>reject(timedOut?timeoutError(command,args):new AppError('node_locked','Vault session is unavailable. Unlock it again.',403,3,'node_locked')));
     pending.end(payload);
   });
 }
