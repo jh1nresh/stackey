@@ -45,6 +45,7 @@ test('website origin and username fail closed on open redirects, local targets a
   assert.equal(websiteOrigin(ORIGIN), ORIGIN);
   assert.equal(websiteUsername(USER), USER);
   for (const origin of ['http://dashboard.example.test', 'https://127.0.0.1', 'https://localhost',
+    'https://localhost.', 'https://foo.localhost.',
     'https://evil.test/login', 'https://user:pass@evil.test', 'https://dashboard.example.test:444',
     'https://192.168.0.1', 'https://dashboard.example.test/?next=https://evil.test']) {
     assert.throws(() => websiteOrigin(origin));
@@ -69,11 +70,21 @@ test('default executor refuses without networking and never returns the password
 test('executor output is rebuilt from a whitelist; extra cookie or password fields never reach the agent', async () => {
   const connection = { id: 'connection_' + randomUUID(), wallet_id: 'wallet_demo', provider: 'website' as const,
     name: 'Site', config: { origin: ORIGIN, username: USER, credential_id: 'credential_' + randomUUID() } };
-  const leaky: WebsiteLoginExecutor = async () => ({ state: 'completed', cookie: 'sid=stolen', password: SECRET, html: `<input value="${SECRET}">` } as any);
+  const leaky: WebsiteLoginExecutor = async () => ({ state: 'completed', cookie: 'sid=stolen', html: '<input value="redacted">' } as any);
   const completed = await executeWebsiteLogin(connection, SECRET, {}, () => {}, leaky);
   assert.deepEqual(completed, { state: 'completed', result: { source: 'website_login', origin: ORIGIN, outcome: 'authenticated' } });
   assert.equal(leak(completed), false);
+  const exact: WebsiteLoginExecutor = async () => ({ state: 'completed', password: SECRET } as any);
+  await assert.rejects(executeWebsiteLogin(connection, SECRET, {}, () => {}, exact), error => error instanceof AppError && error.code === 'secret_leak_blocked' && !leak(error));
   await assert.rejects(executeWebsiteLogin(connection, SECRET, { url: ORIGIN }, () => {}, leaky), error => error instanceof AppError && error.code === 'invalid_parameters');
+});
+
+test('executor AppError that includes the password is replaced with executor_failed', async () => {
+  const connection = { id: 'connection_' + randomUUID(), wallet_id: 'wallet_demo', provider: 'website' as const,
+    name: 'Site', config: { origin: ORIGIN, username: USER, credential_id: 'credential_' + randomUUID() } };
+  const noisy: WebsiteLoginExecutor = async () => { throw new AppError('login_failed', `could not type ${SECRET}`, 400, 2, 'failed'); };
+  await assert.rejects(executeWebsiteLogin(connection, SECRET, {}, () => {}, noisy),
+    error => error instanceof AppError && error.code === 'executor_failed' && !leak(error) && !String(error.message).includes(SECRET));
 });
 
 async function runtime(t: TestContext, executor: WebsiteLoginExecutor = refuseWebsiteLogin) {
@@ -185,12 +196,27 @@ test('human_required outcomes stay sanitized and a leaking executor error never 
   await drainProviderOperations(fail.node.nodeId);
   const unknown = await operation(fail.agent, failId);
   assert.equal(unknown.status, 'result_unknown');
-  assert.equal((unknown.data as any).result.error.code, 'internal_error');
+  assert.equal((unknown.data as any).result.error.code, 'executor_failed');
   assert.equal(leak(unknown), false);
   assert.equal(leak(traces(fail.store, [unknown])), false);
+
+  const appError: WebsiteLoginExecutor = async () => { throw new AppError('login_failed', `could not type ${SECRET}`, 400, 2, 'failed'); };
+  const leaky = await runtime(t, appError);
+  await vaultRequest(leaky.dir, 'grant.approve', { ...leaky.owner, pairing_id: leaky.pairing.pairing_id,
+    principal: leaky.pairing.principal, action: WEBSITE_LOGIN_ACTION, ttl: 300, wallet_id: 'wallet_demo',
+    connection_id: leaky.connected.id, max_calls: 1, max_amount_minor: 0 });
+  const leakId = randomUUID();
+  await runOrders(leaky.agent, WEBSITE_LOGIN_ACTION, {}, leakId);
+  await drainProviderOperations(leaky.node.nodeId);
+  const sanitized = await operation(leaky.agent, leakId);
+  assert.equal(sanitized.status, 'result_unknown');
+  assert.equal((sanitized.data as any).result.error.code, 'executor_failed');
+  assert.ok(!(sanitized.data as any).result.error.message.includes(SECRET));
+  assert.equal(leak(sanitized), false);
+  assert.equal(leak(traces(leaky.store, [sanitized])), false);
 });
 
-test('production default executor leaves the grant unused for a real site and records no secret', async t => {
+test('production default executor refuses with permission_denied and does not consume the single-use grant', async t => {
   const f = await runtime(t);
   await vaultRequest(f.dir, 'grant.approve', { ...f.owner, pairing_id: f.pairing.pairing_id,
     principal: f.pairing.principal, action: WEBSITE_LOGIN_ACTION, ttl: 300, wallet_id: 'wallet_demo',
@@ -198,9 +224,10 @@ test('production default executor leaves the grant unused for a real site and re
   const id = randomUUID();
   await runOrders(f.agent, WEBSITE_LOGIN_ACTION, {}, id);
   await drainProviderOperations(f.node.nodeId);
-  const result = await operation(f.agent, id);
-  assert.equal(result.status, 'result_unknown');
-  assert.equal((result.data as any).result.error.code, 'executor_unavailable');
-  assert.equal(leak(result), false);
-  assert.equal(leak(traces(f.store, [result])), false);
+  await assert.rejects(operation(f.agent, id), denied('executor_unavailable'));
+  const again = randomUUID();
+  await runOrders(f.agent, WEBSITE_LOGIN_ACTION, {}, again);
+  await drainProviderOperations(f.node.nodeId);
+  await assert.rejects(operation(f.agent, again), denied('executor_unavailable'));
+  assert.equal(leak(traces(f.store)), false);
 });

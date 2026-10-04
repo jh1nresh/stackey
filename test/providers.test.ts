@@ -43,7 +43,7 @@ test('website connections pin an HTTPS origin and require a website_login creden
   assert.deepEqual(connectionConfig('website',{origin:'https://dashboard.example.test',username:'owner@example.test',credential_id:login},websiteData,wallet),
     {origin:'https://dashboard.example.test',username:'owner@example.test',credential_id:login});
   assert.throws(()=>connectionConfig('website',{origin:'https://dashboard.example.test',username:'owner@example.test',credential_id:credential},data,wallet));
-  for(const origin of ['http://dashboard.example.test','https://127.0.0.1','https://localhost','https://evil.test/login','https://user:pass@evil.test','https://dashboard.example.test:444']){
+  for(const origin of ['http://dashboard.example.test','https://127.0.0.1','https://localhost','https://localhost.','https://foo.localhost.','https://evil.test/login','https://user:pass@evil.test','https://dashboard.example.test:444']){
     assert.throws(()=>connectionConfig('website',{origin,username:'owner@example.test',credential_id:login},websiteData,wallet));
   }
   assert.throws(()=>providerParams('website.session.login',{url:'https://evil.test'}));

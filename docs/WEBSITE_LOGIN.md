@@ -117,9 +117,11 @@ Privy dashboard, Vercel, Stripe, Google, and GitHub routinely show at least one 
 Reuse existing grant fields. No new token type.
 
 - **Grant TTL**: existing 60–900 seconds. Owner picks the window. Session tokens remain `min(60s, grant.expires_at)`.
-- **`max_calls`**: forced to `1` for `website.session.login`. A second operation ID is `budget_exceeded`.
-- **`max_amount_minor`**: forced to `0`. This is not a payment.
+- **`max_calls`**: forced to `1` for `website.session.login`. A second *successful or uncertain* operation ID is `budget_exceeded`.
+- **`max_amount_minor`**: forced to `0` (`--max-amount-minor 0`). This is not a payment.
 - **Same operation ID**: existing replay. Returns the stored sanitized result. Does not call the executor again and does not decrypt the password again for a new login.
+- **Default executor refuse**: `executor_unavailable` is returned as `permission_denied` / `failed`. It does **not** consume the single-use call, so a later injected executor can still use the grant.
+- **Executor exception**: any other thrown value is replaced with `executor_failed`. That outcome is `result_unknown` and **does** consume the call.
 - **Orphaned `executing` row**: existing `result_unknown` + reservation retained. No automatic retry (a retry would be a second login).
 - **Revoke / lock / expiry**: existing fail-closed checks before and after the executor. In-flight results are not delivered to a revoked agent.
 
@@ -130,7 +132,7 @@ A “single-use key” in the founder’s wording is this grant + call budget, n
 Existing objects only:
 
 - `grant_approved` / `grant_revoked` — subject is the principal, object is the grant ID
-- `operation_dispatched` / `operation_completed` / `operation_result_unknown`
+- `operation_dispatched` / `operation_completed` / `operation_failed` / `operation_result_unknown`
 - Grant row: pairing, principal, action, connection, `max_calls`, TTL, version
 - Operation row: hashes and sanitized JSON
 
@@ -198,19 +200,22 @@ Not feasible, and not attempted:
 # Owner: store a fixture login. Use a private JSON file, never a real password in chat.
 # {"value":"fixture-only-password"}
 stackey credential import --wallet wallet_demo --name "Privy dashboard" \
-  --kind website_login --secret-file .stackey/website-secret.json
+  --kind website_login --secret-file .stackey/website-secret.json \
+  --vault-dir .stackey/vault
 
 # {"origin":"https://dashboard.privy.io","username":"owner@example.com","credential_id":"credential_..."}
 stackey connection add --wallet wallet_demo --name Privy \
-  --provider website --config-file .stackey/website-config.json
+  --provider website --config-file .stackey/website-config.json \
+  --vault-dir .stackey/vault
 
 stackey node approve PAIRING_ID --principal FULL_FINGERPRINT \
   --action website.session.login --connection CONNECTION_ID \
-  --wallet wallet_demo --ttl 300 --max-calls 1
+  --wallet wallet_demo --ttl 300 --max-calls 1 --max-amount-minor 0 \
+  --vault-dir .stackey/vault --data-dir .stackey/vault-node
 
 # Agent: empty params. Poll the operation. Expect executor_unavailable unless a test mock is injected.
-stackey run website.session.login
-stackey node revoke GRANT_ID
+stackey run website.session.login --state-dir .stackey/agents/new-agent
+stackey node revoke GRANT_ID --vault-dir .stackey/vault --data-dir .stackey/vault-node
 ```
 
 Never put a real password, cookie, invite, or Owner URL in command lines, tests, docs, or PRs.

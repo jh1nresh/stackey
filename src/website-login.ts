@@ -15,10 +15,11 @@ export function websiteOrigin(value: unknown): string {
   const raw = textField(value, 250);
   let url: URL;
   try { url = new URL(raw); } catch { throw new AppError('invalid_origin', 'Use a fixed HTTPS website origin.'); }
+  const host = url.hostname.replace(/\.+$/u, '').toLowerCase();
   if (url.protocol !== 'https:' || url.username || url.password || url.port || url.search || url.hash ||
       (url.pathname !== '/' && url.pathname !== '') || raw !== url.origin ||
-      url.hostname === 'localhost' || url.hostname.endsWith('.localhost') ||
-      !url.hostname.includes('.') || /^\d{1,3}(?:\.\d{1,3}){3}$/.test(url.hostname)) {
+      host === 'localhost' || host.endsWith('.localhost') ||
+      !host.includes('.') || /^\d{1,3}(?:\.\d{1,3}){3}$/.test(host)) {
     throw new AppError('invalid_origin', 'Use a fixed HTTPS website origin.');
   }
   return url.origin;
@@ -38,7 +39,12 @@ export const refuseWebsiteLogin: WebsiteLoginExecutor = async () => {
 
 function containsSecret(value: unknown, secret: string): boolean {
   if (!secret) return false;
-  return JSON.stringify(value).includes(secret);
+  if (typeof value === 'string') return value === secret;
+  if (Array.isArray(value)) return value.some(item => containsSecret(item, secret));
+  if (value && typeof value === 'object') {
+    return Object.values(value as Record<string, unknown>).some(item => containsSecret(item, secret));
+  }
+  return false;
 }
 
 function sanitize(origin: string, outcome: WebsiteLoginOutcome) {
@@ -66,11 +72,16 @@ export async function executeWebsiteLogin(
   const origin = websiteOrigin(connection.config.origin);
   const username = websiteUsername(connection.config.username);
   check();
-  const outcome = await executor({ origin, username, password: secret });
+  let outcome: WebsiteLoginOutcome;
+  try {
+    outcome = await executor({ origin, username, password: secret });
+  } catch (error) {
+    if (error instanceof AppError && error.code === 'executor_unavailable') throw error;
+    throw new AppError('executor_failed', 'Website login executor failed.', 502, 4, 'failed');
+  }
   check();
-  const result = sanitize(origin, outcome);
-  if (containsSecret(result, secret)) {
+  if (containsSecret(outcome, secret)) {
     throw new AppError('secret_leak_blocked', 'Login result attempted to expose vault material.');
   }
-  return { state: 'completed', result };
+  return { state: 'completed', result: sanitize(origin, outcome) };
 }
