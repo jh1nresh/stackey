@@ -37,27 +37,35 @@ export const refuseWebsiteLogin: WebsiteLoginExecutor = async () => {
   throw new AppError('executor_unavailable', 'Website login is not enabled. This Node has no login executor.', 403, 3, 'permission_denied');
 };
 
-function containsSecret(value: unknown, secret: string): boolean {
-  if (!secret) return false;
-  if (typeof value === 'string') return value === secret;
-  if (Array.isArray(value)) return value.some(item => containsSecret(item, secret));
-  if (value && typeof value === 'object') {
-    return Object.values(value as Record<string, unknown>).some(item => containsSecret(item, secret));
-  }
-  return false;
-}
+interface OutcomeSnapshot { state?: string; reason?: string }
 
-function sanitize(origin: string, outcome: WebsiteLoginOutcome) {
-  if (outcome.state !== 'completed' && outcome.state !== 'human_required') {
+function snapshotOutcome(value: unknown): OutcomeSnapshot {
+  if (value === null || typeof value !== 'object') {
     throw new AppError('invalid_provider_response', 'Login executor returned an invalid state.');
   }
-  if (outcome.state === 'completed') {
+  const snapshot: OutcomeSnapshot = {};
+  const state = Reflect.get(value, 'state');
+  if (typeof state === 'string') snapshot.state = state;
+  const reason = Reflect.get(value, 'reason');
+  if (typeof reason === 'string') snapshot.reason = reason;
+  return snapshot;
+}
+
+function containsSecret(snapshot: OutcomeSnapshot, secret: string): boolean {
+  return !!secret && (snapshot.state === secret || snapshot.reason === secret);
+}
+
+function sanitize(origin: string, snapshot: OutcomeSnapshot) {
+  if (snapshot.state !== 'completed' && snapshot.state !== 'human_required') {
+    throw new AppError('invalid_provider_response', 'Login executor returned an invalid state.');
+  }
+  if (snapshot.state === 'completed') {
     return { source: 'website_login', origin, outcome: 'authenticated' as const };
   }
-  if (!outcome.reason || !HUMAN_REASONS.includes(outcome.reason)) {
+  if (!snapshot.reason || !HUMAN_REASONS.includes(snapshot.reason as WebsiteHumanReason)) {
     throw new AppError('invalid_provider_response', 'Login executor returned an invalid human reason.');
   }
-  return { source: 'website_login', origin, outcome: 'human_required' as const, reason: outcome.reason };
+  return { source: 'website_login', origin, outcome: 'human_required' as const, reason: snapshot.reason as WebsiteHumanReason };
 }
 
 export async function executeWebsiteLogin(
@@ -72,9 +80,9 @@ export async function executeWebsiteLogin(
   const origin = websiteOrigin(connection.config.origin);
   const username = websiteUsername(connection.config.username);
   check();
-  let outcome: WebsiteLoginOutcome;
+  let snapshot: OutcomeSnapshot;
   try {
-    outcome = await executor({ origin, username, password: secret });
+    snapshot = snapshotOutcome(await executor({ origin, username, password: secret }));
   } catch {
     if (executor === refuseWebsiteLogin) {
       throw new AppError('executor_unavailable', 'Website login is not enabled. This Node has no login executor.', 403, 3, 'permission_denied');
@@ -82,8 +90,8 @@ export async function executeWebsiteLogin(
     throw new AppError('executor_failed', 'Website login executor failed.', 502, 4, 'failed');
   }
   check();
-  if (containsSecret(outcome, secret)) {
+  if (containsSecret(snapshot, secret)) {
     throw new AppError('secret_leak_blocked', 'Login result attempted to expose vault material.');
   }
-  return { state: 'completed', result: sanitize(origin, outcome) };
+  return { state: 'completed', result: sanitize(origin, snapshot) };
 }

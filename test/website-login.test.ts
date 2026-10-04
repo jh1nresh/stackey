@@ -24,6 +24,7 @@ import {
   websiteUsername,
   type WebsiteLoginExecutor,
   type WebsiteLoginInput,
+  type WebsiteLoginOutcome,
 } from '../src/website-login.js';
 
 const SECRET = 'fixture-website-password-DO-NOT-LEAK';
@@ -74,9 +75,51 @@ test('executor output is rebuilt from a whitelist; extra cookie or password fiel
   const completed = await executeWebsiteLogin(connection, SECRET, {}, () => {}, leaky);
   assert.deepEqual(completed, { state: 'completed', result: { source: 'website_login', origin: ORIGIN, outcome: 'authenticated' } });
   assert.equal(leak(completed), false);
-  const exact: WebsiteLoginExecutor = async () => ({ state: 'completed', password: SECRET } as any);
-  await assert.rejects(executeWebsiteLogin(connection, SECRET, {}, () => {}, exact), error => error instanceof AppError && error.code === 'secret_leak_blocked' && !leak(error));
+  const extra: WebsiteLoginExecutor = async () => ({ state: 'completed', password: SECRET } as any);
+  const ignored = await executeWebsiteLogin(connection, SECRET, {}, () => {}, extra);
+  assert.deepEqual(ignored.result, { source: 'website_login', origin: ORIGIN, outcome: 'authenticated' });
+  assert.equal(leak(ignored), false);
+  const reasonLeak: WebsiteLoginExecutor = async () => ({ state: 'human_required', reason: SECRET } as any);
+  await assert.rejects(executeWebsiteLogin(connection, SECRET, {}, () => {}, reasonLeak), error => error instanceof AppError && error.code === 'secret_leak_blocked' && !leak(error));
   await assert.rejects(executeWebsiteLogin(connection, SECRET, { url: ORIGIN }, () => {}, leaky), error => error instanceof AppError && error.code === 'invalid_parameters');
+});
+
+function fixtureConnection() {
+  return { id: 'connection_' + randomUUID(), wallet_id: 'wallet_demo', provider: 'website' as const,
+    name: 'Site', config: { origin: ORIGIN, username: USER, credential_id: 'credential_' + randomUUID() } };
+}
+
+test('executor result getters are snapshotted once; later reads and throwing getters cannot leak', async () => {
+  const connection = fixtureConnection();
+  let reads = 0;
+  const flipping: WebsiteLoginExecutor = async () => ({
+    state: 'human_required',
+    get reason() { reads += 1; return reads === 1 ? 'email_otp' : SECRET; },
+  }) as WebsiteLoginOutcome;
+  const first = await executeWebsiteLogin(connection, SECRET, {}, () => {}, flipping);
+  assert.deepEqual(first, { state: 'completed', result: { source: 'website_login', origin: ORIGIN, outcome: 'human_required', reason: 'email_otp' } });
+  assert.equal(reads, 1);
+  assert.equal(leak(first), false);
+
+  const throwing: WebsiteLoginExecutor = async () => ({
+    state: 'human_required',
+    get reason() { throw new AppError('login_failed', `could not type ${SECRET}`, 400, 2, 'failed'); },
+  }) as unknown as WebsiteLoginOutcome;
+  await assert.rejects(executeWebsiteLogin(connection, SECRET, {}, () => {}, throwing),
+    error => error instanceof AppError && error.code === 'executor_failed' && !leak(error) && !String(error.message).includes(SECRET));
+});
+
+test('non-Error executor throws and post-executor check failures stay distinct', async () => {
+  const connection = fixtureConnection();
+  const nonError: WebsiteLoginExecutor = async () => { throw SECRET; };
+  await assert.rejects(executeWebsiteLogin(connection, SECRET, {}, () => {}, nonError),
+    error => error instanceof AppError && error.code === 'executor_failed' && !leak(error) && !String(error.message).includes(SECRET));
+  let checks = 0;
+  await assert.rejects(executeWebsiteLogin(connection, SECRET, {}, () => {
+    checks += 1;
+    if (checks > 1) throw new AppError('grant_revoked', 'Owner revoked this grant.', 403, 3, 'grant_revoked');
+  }, async () => ({ state: 'completed' })), error => error instanceof AppError && error.code === 'grant_revoked');
+  assert.equal(checks, 2);
 });
 
 test('executor AppError that includes the password is replaced with executor_failed', async () => {
@@ -219,6 +262,46 @@ test('human_required outcomes stay sanitized and a leaking executor error never 
   assert.ok(!(sanitized.data as any).result.error.message.includes(SECRET));
   assert.equal(leak(sanitized), false);
   assert.equal(leak(traces(leaky.store, [sanitized])), false);
+});
+
+test('result getters cannot leak the password into results or audit rows and still consume the grant', async t => {
+  let reads = 0;
+  const flipping: WebsiteLoginExecutor = async () => ({
+    state: 'human_required',
+    get reason() { reads += 1; return reads === 1 ? 'email_otp' : SECRET; },
+  }) as WebsiteLoginOutcome;
+  const flip = await runtime(t, flipping);
+  await vaultRequest(flip.dir, 'grant.approve', { ...flip.owner, pairing_id: flip.pairing.pairing_id,
+    principal: flip.pairing.principal, action: WEBSITE_LOGIN_ACTION, ttl: 300, wallet_id: 'wallet_demo',
+    connection_id: flip.connected.id, max_calls: 1, max_amount_minor: 0 });
+  const flipId = randomUUID();
+  await runOrders(flip.agent, WEBSITE_LOGIN_ACTION, {}, flipId);
+  await drainProviderOperations(flip.node.nodeId);
+  const flipped = await operation(flip.agent, flipId);
+  assert.equal(flipped.status, 'ok');
+  assert.deepEqual((flipped.data as any).result, { source: 'website_login', origin: ORIGIN, outcome: 'human_required', reason: 'email_otp' });
+  assert.equal(leak(flipped), false);
+  assert.equal(leak(traces(flip.store, [flipped])), false);
+  await assert.rejects(runOrders(flip.agent, WEBSITE_LOGIN_ACTION, {}), denied('budget_exceeded'));
+
+  const throwing: WebsiteLoginExecutor = async () => ({
+    state: 'human_required',
+    get reason() { throw new AppError('login_failed', `could not type ${SECRET}`, 400, 2, 'failed'); },
+  }) as unknown as WebsiteLoginOutcome;
+  const boom = await runtime(t, throwing);
+  await vaultRequest(boom.dir, 'grant.approve', { ...boom.owner, pairing_id: boom.pairing.pairing_id,
+    principal: boom.pairing.principal, action: WEBSITE_LOGIN_ACTION, ttl: 300, wallet_id: 'wallet_demo',
+    connection_id: boom.connected.id, max_calls: 1, max_amount_minor: 0 });
+  const boomId = randomUUID();
+  await runOrders(boom.agent, WEBSITE_LOGIN_ACTION, {}, boomId);
+  await drainProviderOperations(boom.node.nodeId);
+  const failed = await operation(boom.agent, boomId);
+  assert.equal(failed.status, 'result_unknown');
+  assert.equal((failed.data as any).result.error.code, 'executor_failed');
+  assert.ok(!(failed.data as any).result.error.message.includes(SECRET));
+  assert.equal(leak(failed), false);
+  assert.equal(leak(traces(boom.store, [failed])), false);
+  await assert.rejects(runOrders(boom.agent, WEBSITE_LOGIN_ACTION, {}), denied('budget_exceeded'));
 });
 
 test('injected executor_unavailable AppError is sanitized and still consumes the single-use grant', async t => {
