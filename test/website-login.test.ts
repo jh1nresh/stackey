@@ -85,6 +85,11 @@ test('executor AppError that includes the password is replaced with executor_fai
   const noisy: WebsiteLoginExecutor = async () => { throw new AppError('login_failed', `could not type ${SECRET}`, 400, 2, 'failed'); };
   await assert.rejects(executeWebsiteLogin(connection, SECRET, {}, () => {}, noisy),
     error => error instanceof AppError && error.code === 'executor_failed' && !leak(error) && !String(error.message).includes(SECRET));
+  const spoofed: WebsiteLoginExecutor = async () => {
+    throw new AppError('executor_unavailable', `Website login failed for ${SECRET}`, 403, 3, 'permission_denied');
+  };
+  await assert.rejects(executeWebsiteLogin(connection, SECRET, {}, () => {}, spoofed),
+    error => error instanceof AppError && error.code === 'executor_failed' && !leak(error) && !String(error.message).includes(SECRET));
 });
 
 async function runtime(t: TestContext, executor: WebsiteLoginExecutor = refuseWebsiteLogin) {
@@ -214,6 +219,26 @@ test('human_required outcomes stay sanitized and a leaking executor error never 
   assert.ok(!(sanitized.data as any).result.error.message.includes(SECRET));
   assert.equal(leak(sanitized), false);
   assert.equal(leak(traces(leaky.store, [sanitized])), false);
+});
+
+test('injected executor_unavailable AppError is sanitized and still consumes the single-use grant', async t => {
+  const spoofed: WebsiteLoginExecutor = async () => {
+    throw new AppError('executor_unavailable', `Website login failed for ${SECRET}`, 403, 3, 'permission_denied');
+  };
+  const f = await runtime(t, spoofed);
+  await vaultRequest(f.dir, 'grant.approve', { ...f.owner, pairing_id: f.pairing.pairing_id,
+    principal: f.pairing.principal, action: WEBSITE_LOGIN_ACTION, ttl: 300, wallet_id: 'wallet_demo',
+    connection_id: f.connected.id, max_calls: 1, max_amount_minor: 0 });
+  const id = randomUUID();
+  await runOrders(f.agent, WEBSITE_LOGIN_ACTION, {}, id);
+  await drainProviderOperations(f.node.nodeId);
+  const result = await operation(f.agent, id);
+  assert.equal(result.status, 'result_unknown');
+  assert.equal((result.data as any).result.error.code, 'executor_failed');
+  assert.ok(!(result.data as any).result.error.message.includes(SECRET));
+  assert.equal(leak(result), false);
+  assert.equal(leak(traces(f.store, [result])), false);
+  await assert.rejects(runOrders(f.agent, WEBSITE_LOGIN_ACTION, {}), denied('budget_exceeded'));
 });
 
 test('production default executor refuses with permission_denied and does not consume the single-use grant', async t => {

@@ -120,8 +120,8 @@ Reuse existing grant fields. No new token type.
 - **`max_calls`**: forced to `1` for `website.session.login`. A second *successful or uncertain* operation ID is `budget_exceeded`.
 - **`max_amount_minor`**: forced to `0` (`--max-amount-minor 0`). This is not a payment.
 - **Same operation ID**: existing replay. Returns the stored sanitized result. Does not call the executor again and does not decrypt the password again for a new login.
-- **Default executor refuse**: `executor_unavailable` is returned as `permission_denied` / `failed`. It does **not** consume the single-use call, so a later injected executor can still use the grant.
-- **Executor exception**: any other thrown value is replaced with `executor_failed`. That outcome is `result_unknown` and **does** consume the call.
+- **Default executor refuse**: only the built-in `refuseWebsiteLogin` function is a non-consuming refusal. It always becomes a brand-new `executor_unavailable` / `permission_denied` (fixed message, never the executor's own text).
+- **Executor exception**: any injected executor throw, including a spoofed `executor_unavailable` whose message contains the password, becomes `executor_failed`. That outcome is `result_unknown` and **does** consume the call.
 - **Orphaned `executing` row**: existing `result_unknown` + reservation retained. No automatic retry (a retry would be a second login).
 - **Revoke / lock / expiry**: existing fail-closed checks before and after the executor. In-flight results are not delivered to a revoked agent.
 

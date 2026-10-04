@@ -75,8 +75,10 @@ export async function executeWebsiteLogin(
   let outcome: WebsiteLoginOutcome;
   try {
     outcome = await executor({ origin, username, password: secret });
-  } catch (error) {
-    if (error instanceof AppError && error.code === 'executor_unavailable') throw error;
+  } catch {
+    if (executor === refuseWebsiteLogin) {
+      throw new AppError('executor_unavailable', 'Website login is not enabled. This Node has no login executor.', 403, 3, 'permission_denied');
+    }
     throw new AppError('executor_failed', 'Website login executor failed.', 502, 4, 'failed');
   }
   check();
