@@ -30,10 +30,10 @@ const help = `Stackey — local agent authorization demo
   stackey vault restore --backup-file <private-file> --recovery-file <private-file> [--vault-dir <new-dir>]
   stackey wallet list | create --name <name> [--vault-dir ...] [--request-id <uuid>]
   stackey credential list --wallet <id> [--vault-dir ...]
-  stackey credential import --wallet <id> --name <name> --kind password|api_key|private_key --secret-file <private-JSON-file> [--vault-dir ...] [--request-id <uuid>]
+  stackey credential import --wallet <id> --name <name> --kind password|api_key|private_key|website_login --secret-file <private-JSON-file> [--vault-dir ...] [--request-id <uuid>]
   stackey credential remove <credential-id> [--vault-dir ...]
   stackey connection list --wallet <id> [--vault-dir ...]
-  stackey connection add --wallet <id> --name <name> --provider demo|supabase|vercel|stripe --config-file <private-JSON-file> [--vault-dir ...] [--request-id <uuid>]
+  stackey connection add --wallet <id> --name <name> --provider demo|supabase|vercel|stripe|website --config-file <private-JSON-file> [--vault-dir ...] [--request-id <uuid>]
   stackey link login | finish | cancel --wallet <id> [--vault-dir ...]
   stackey node init [--data-dir .stackey/node]
   stackey node start [--data-dir .stackey/node] [--port 45820]
@@ -56,6 +56,7 @@ const help = `Stackey — local agent authorization demo
   stackey run vercel.ai.generate --prompt <text> [--operation-id ...]
   stackey run stripe.payments.read [--cursor ...]
   stackey run stripe.mpp.pay [--operation-id ...]
+  stackey run website.session.login [--operation-id ...]
   stackey operation <operation-id> [--state-dir ...]
 
 All results are JSON. --json is accepted for compatibility.
@@ -265,7 +266,7 @@ async function main() {
       if (action !== ACTION && !providerAction(action)) throw new AppError('action_not_available', 'Unsupported action.');
       output(envelope('ok', action===ACTION?ORDER_SCHEMA:providerSchema(action))); return;
     }
-    output(await runOrders(stateDir, action, action==='vercel.ai.generate'?{prompt:values.prompt}:action==='stripe.mpp.pay'?{}:action==='stripe.payments.read'?(values.cursor?{cursor:values.cursor}:{}):{ from: values.from, to: values.to,
+    output(await runOrders(stateDir, action, action==='vercel.ai.generate'?{prompt:values.prompt}:action==='stripe.mpp.pay'||action==='website.session.login'?{}:action==='stripe.payments.read'?(values.cursor?{cursor:values.cursor}:{}):{ from: values.from, to: values.to,
       ...(values.cursor === undefined ? {} : { cursor: values.cursor }) }, values['operation-id'])); return;
   }
   if (command === 'operation' && positionals.length === 2) {

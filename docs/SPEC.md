@@ -52,7 +52,7 @@ Agent 採用效果以真實任務完成率、人工介入、配對耗時與工�
 
 GitHub／Google／Vercel 資源 adapters、MCP 包裝、公司 RBAC、AgentMail／AgentPhone、真正臨時帳號 provision／cleanup、受控鏈上簽署、多個 active Node 與互通協定。
 
-第一版 agent API 不提供任意秘密匯出、任意 URL／SQL／header 代理、通用私鑰簽章、agent 自行再授權。密碼與服務私鑰可以作為保管項目；自動登入與使用須逐一實作固定 adapter，不承諾任意網站都能免登入。
+第一版 agent API 不提供任意秘密匯出、任意 URL／SQL／header 代理、通用私鑰簽章、agent 自行再授權。密碼與服務私鑰可以作為保管項目；自動登入與使用須逐一實作固定 adapter，不承諾任意網站都能免登入。Website login 的控制平面與 Oct 12 範圍見 [WEBSITE_LOGIN.md](WEBSITE_LOGIN.md)。
 
 ## 4. 架構與技術分工
 

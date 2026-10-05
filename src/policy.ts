@@ -41,8 +41,9 @@ export async function approvePairing(store: Store, node: Identity, owner: Identi
   if (action !== ACTION && (!providerAction(action) || !scope)) denied('action_not_available', 'Select a supported action and connection.');
   const connectionId = scope?.connection_id ?? CONNECTION;
   const resource = scope ? resourceFor(action, connectionId) : RESOURCE;
-  const maxCalls = scope ? integer(scope.max_calls, 1, 100) : 1000;
-  const maxAmount = scope ? integer(scope.max_amount_minor, 0, 10000) : 0;
+  const websiteLogin = action === 'website.session.login';
+  const maxCalls = websiteLogin ? integer(scope!.max_calls, 1, 1) : scope ? integer(scope.max_calls, 1, 100) : 1000;
+  const maxAmount = websiteLogin ? integer(scope!.max_amount_minor, 0, 0) : scope ? integer(scope.max_amount_minor, 0, 10000) : 0;
   if (action === 'stripe.mpp.pay' && maxAmount < 50) throw new AppError('invalid_budget', 'MPP requires a positive USD minor-unit budget.');
   if (!Number.isInteger(ttl) || ttl < 60 || ttl > 900) throw new AppError('invalid_ttl', 'Grant lifetime must be 60–900 seconds.');
   if (!/^(wallet_demo|wallet_[0-9a-f-]{36})$/.test(walletId)) throw new AppError('invalid_wallet', 'Invalid wallet ID.');

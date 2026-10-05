@@ -3,8 +3,9 @@ import Stripe from 'stripe';
 import { AppError, record, textField } from './contracts.js';
 import { orderParams } from './orders.js';
 import type { Connection, VaultData } from './vault.js';
+import { WEBSITE_LOGIN_ACTION, websiteOrigin, websiteUsername } from './website-login.js';
 
-export const PROVIDER_ACTIONS = ['supabase.orders.read', 'vercel.ai.generate', 'stripe.payments.read', 'stripe.mpp.pay'] as const;
+export const PROVIDER_ACTIONS = ['supabase.orders.read', 'vercel.ai.generate', 'stripe.payments.read', 'stripe.mpp.pay', WEBSITE_LOGIN_ACTION] as const;
 export type ProviderAction = typeof PROVIDER_ACTIONS[number];
 export const providerAction = (action: string): action is ProviderAction => PROVIDER_ACTIONS.includes(action as ProviderAction);
 export const resourceFor = (action: string, connection: string) => `connection:${connection}/${action}`;
@@ -20,6 +21,12 @@ export function integer(value: unknown, min: number, max: number): number {
 export function connectionConfig(provider: Connection['provider'], raw: unknown, data: VaultData, walletId: string) {
   const config = record(raw);
   if (provider === 'demo') { exactFields(config, []); return config; }
+  if (provider === 'website') {
+    exactFields(config, ['origin', 'username', 'credential_id']);
+    const login = data.credentials.find(c => c.id === config.credential_id && c.wallet_id === walletId && c.kind === 'website_login');
+    if (!login) throw new AppError('credential_not_found', 'Select a website login credential in this wallet.');
+    return { origin: websiteOrigin(config.origin), username: websiteUsername(config.username), credential_id: login.id };
+  }
   const fields = provider === 'supabase' ? ['project_ref', 'credential_id'] : provider === 'vercel' ? ['model', 'credential_id'] :
     config.mode === 'mpp' ? ['mode', 'endpoint', 'network_id', 'credential_id', 'payment_method_id', 'amount_minor'] : ['mode', 'credential_id'];
   exactFields(config, fields);
@@ -44,7 +51,8 @@ export function connectionConfig(provider: Connection['provider'], raw: unknown,
 export function supports(connection: Connection, action: string) {
   return connection.provider === 'supabase' && action === 'supabase.orders.read' ||
     connection.provider === 'vercel' && action === 'vercel.ai.generate' ||
-    connection.provider === 'stripe' && (connection.config.mode === 'mpp' ? action === 'stripe.mpp.pay' : action === 'stripe.payments.read');
+    connection.provider === 'stripe' && (connection.config.mode === 'mpp' ? action === 'stripe.mpp.pay' : action === 'stripe.payments.read') ||
+    connection.provider === 'website' && action === WEBSITE_LOGIN_ACTION;
 }
 export function providerParams(action: string, raw: unknown) {
   if (action === 'supabase.orders.read') return { ...orderParams(raw) };
@@ -55,13 +63,14 @@ export function providerParams(action: string, raw: unknown) {
     if (params.cursor !== undefined && !/^pi_[A-Za-z0-9]+$/.test(textField(params.cursor, 100))) throw new AppError('invalid_cursor', 'Use the returned Stripe cursor.');
     return params.cursor === undefined ? {} : { cursor: params.cursor as string };
   }
-  if (action === 'stripe.mpp.pay') { exactFields(params, []); return {}; }
+  if (action === 'stripe.mpp.pay' || action === WEBSITE_LOGIN_ACTION) { exactFields(params, []); return {}; }
   throw new AppError('action_not_available', 'Unsupported action.');
 }
 export function providerSchema(action: string) {
   return { action, parameters: action === 'supabase.orders.read' ? { from: 'YYYY-MM-DD', to: 'YYYY-MM-DD', cursor: 'optional opaque cursor returned by the previous page' } :
     action === 'vercel.ai.generate' ? { prompt: 'text, at most 4000 characters' } : action === 'stripe.payments.read' ? { cursor: 'optional returned PaymentIntent ID' } : {},
-    limits: action === 'supabase.orders.read' ? { page_size: 100 } : action === 'stripe.payments.read' ? { page_size: 10 } : action === 'vercel.ai.generate' ? { max_output_tokens: 1024 } : { currency: 'USD', test_mode: true },
+    limits: action === WEBSITE_LOGIN_ACTION ? { max_calls: 1, credentials_exported: false, cookies_exported: false } :
+      action === 'supabase.orders.read' ? { page_size: 100 } : action === 'stripe.payments.read' ? { page_size: 10 } : action === 'vercel.ai.generate' ? { max_output_tokens: 1024 } : { currency: 'USD', test_mode: true },
     requires_owner_grant: true, credentials_exported: false };
 }
 export type ProviderFetch = typeof fetch;

@@ -37,6 +37,17 @@ test('Link spend-request mock rejects flags outside the 0.25.1 CLI schema',()=>{
   assert.throws(()=>assertLinkSpendRequestArgs(['spend-request','request-approval','sr_fixture','--interval','0','--max-attempts','1']));
   assert.throws(()=>assertLinkSpendRequestArgs(['spend-request','create','--interval','0']));
 });
+test('website connections pin an HTTPS origin and require a website_login credential',()=>{
+  const login='credential_'+randomUUID();
+  const websiteData={...data,credentials:[...data.credentials,{id:login,wallet_id:wallet,name:'Site',kind:'website_login' as const,value:'x'}]};
+  assert.deepEqual(connectionConfig('website',{origin:'https://dashboard.example.test',username:'owner@example.test',credential_id:login},websiteData,wallet),
+    {origin:'https://dashboard.example.test',username:'owner@example.test',credential_id:login});
+  assert.throws(()=>connectionConfig('website',{origin:'https://dashboard.example.test',username:'owner@example.test',credential_id:credential},data,wallet));
+  for(const origin of ['http://dashboard.example.test','https://127.0.0.1','https://localhost','https://localhost.','https://foo.localhost.','https://evil.test/login','https://user:pass@evil.test','https://dashboard.example.test:444']){
+    assert.throws(()=>connectionConfig('website',{origin,username:'owner@example.test',credential_id:login},websiteData,wallet));
+  }
+  assert.throws(()=>providerParams('website.session.login',{url:'https://evil.test'}));
+});
 test('provider configurations reject arbitrary destinations, cross-wallet credentials, extra config and live Stripe mode',()=>{
   assert.deepEqual(connectionConfig('supabase',supabase.config,data,wallet),supabase.config);
   for(const config of [{...supabase.config,url:'http://127.0.0.1'},{...supabase.config,project_ref:'../bad'},supabase.config]){

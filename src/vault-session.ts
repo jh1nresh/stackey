@@ -12,6 +12,7 @@ import { openVault, recovery, VAULT_REQUESTS_CAP, type Connection, type Credenti
 import { connectionConfig, executeProvider, integer, providerParams, supports } from './providers.js';
 import { payMpp, type PaymentContinuation } from './mpp-payment.js';
 import { sessionPath } from './vault-client.js';
+import { executeWebsiteLogin, refuseWebsiteLogin, WEBSITE_LOGIN_ACTION, type WebsiteLoginExecutor } from './website-login.js';
 
 export interface RunningVault { server:Server;vaultId:string;owner:string;expiresAt:number;close():Promise<void> }
 export function requireBoundVault(store:Store,token:string,vaultId:string):void {
@@ -22,7 +23,7 @@ export function requireBoundVault(store:Store,token:string,vaultId:string):void 
     throw new AppError('node_locked','This vault session is no longer bound to the Node.',403,3,'node_locked');
   }
 }
-export async function unlockVault(dir:string,recoveryFile:string,nodeDir:string,ttl=900,clock=seconds,beforeExecute?:()=>Promise<void>):Promise<RunningVault> {
+export async function unlockVault(dir:string,recoveryFile:string,nodeDir:string,ttl=900,clock=seconds,beforeExecute?:()=>Promise<void>,websiteLogin:WebsiteLoginExecutor=refuseWebsiteLogin):Promise<RunningVault> {
   if(!Number.isInteger(ttl)||ttl<60||ttl>3600)throw new AppError('invalid_ttl','Vault unlock lifetime must be 60–3600 seconds.');
   const vault=await openVault(dir,await recovery(recoveryFile));
   const pointer=sessionPath(dir);
@@ -97,7 +98,7 @@ export async function unlockVault(dir:string,recoveryFile:string,nodeDir:string,
     if(command==='credential.import') {
       exact(['wallet_id','name','kind','value'],['request_id']);const replay=replayed(command,args);if(replay)return replay;
       const w=wallet(args.wallet_id);
-      if(!['password','api_key','private_key'].includes(String(args.kind)))throw new AppError('invalid_kind','Use password, api_key or private_key.');
+      if(!['password','api_key','private_key','website_login'].includes(String(args.kind)))throw new AppError('invalid_kind','Use password, api_key, private_key or website_login.');
       const value:Credential={id:'credential_'+randomUUID(),wallet_id:w.id,name:displayName(args.name),kind:args.kind as Credential['kind'],value:textField(args.value,16384)};
       const metadata={id:value.id,wallet_id:value.wallet_id,name:value.name,kind:value.kind};
       vault.data.credentials.push(value);const evicted=remember(command,args,metadata);
@@ -109,7 +110,7 @@ export async function unlockVault(dir:string,recoveryFile:string,nodeDir:string,
     if(command==='connection.add') {
       exact(['wallet_id','name','provider','config'],['request_id']);const replay=replayed(command,args);if(replay)return replay;
       const w=wallet(args.wallet_id);
-      if(!['demo','supabase','vercel','stripe'].includes(String(args.provider)))throw new AppError('invalid_provider','Use a supported provider.');
+      if(!['demo','supabase','vercel','stripe','website'].includes(String(args.provider)))throw new AppError('invalid_provider','Use a supported provider.');
       const value:Connection={id:'connection_'+randomUUID(),wallet_id:w.id,name:displayName(args.name),provider:args.provider as Connection['provider'],config:connectionConfig(args.provider as Connection['provider'],args.config,vault.data,w.id)};
       const metadata={id:value.id,wallet_id:value.wallet_id,name:value.name,provider:value.provider};
       vault.data.connections.push(value);w.connections.push(value.id);const evicted=remember(command,args,metadata);
@@ -140,6 +141,7 @@ export async function unlockVault(dir:string,recoveryFile:string,nodeDir:string,
         const credential=vault.data.credentials.find(c=>c.id===connection.config.credential_id&&c.wallet_id===grant.wallet_id)!;
         const params=providerParams(grant.action,args.params);
         if(grant.action==='stripe.mpp.pay')return await payMpp(connection,credential.value,textField(args.operation_id,36),grant.max_amount_minor,check,args.previous as PaymentContinuation|undefined);
+        if(grant.action===WEBSITE_LOGIN_ACTION)return await executeWebsiteLogin(connection,credential.value,params,check,websiteLogin);
         check();const result=await executeProvider(connection,grant.action,params,credential.value);check();
         return {state:'completed',result};
       } finally {store.close();}
@@ -168,7 +170,8 @@ export async function unlockVault(dir:string,recoveryFile:string,nodeDir:string,
           const connection=vault.data.connections.find(c=>c.id===args.connection_id&&c.wallet_id===w.id&&supports(c,String(args.action)));
           if(!connection)throw new AppError('connection_unavailable','Select a matching connection in this wallet.');
           connectionConfig(connection.provider,connection.config,vault.data,w.id);
-          return await approvePairing(store,node,vault.owner,textField(args.pairing_id,36),textField(args.principal,64),textField(args.action,64),Number(args.ttl),clock,w.id,{connection_id:connection.id,max_calls:integer(args.max_calls??1,1,100),max_amount_minor:integer(args.max_amount_minor??0,0,10000)},guard);
+          const websiteLoginGrant=args.action===WEBSITE_LOGIN_ACTION;
+          return await approvePairing(store,node,vault.owner,textField(args.pairing_id,36),textField(args.principal,64),textField(args.action,64),Number(args.ttl),clock,w.id,{connection_id:connection.id,max_calls:integer(args.max_calls??1,1,websiteLoginGrant?1:100),max_amount_minor:integer(args.max_amount_minor??0,0,websiteLoginGrant?0:10000)},guard);
         }
         if(!vault.data.connections.some(c=>c.wallet_id===w.id&&c.provider==='demo'))throw new AppError('connection_unavailable','Connect a demo resource to this wallet first.');
         return await approvePairing(store,node,vault.owner,textField(args.pairing_id,36),textField(args.principal,64),textField(args.action,64),Number(args.ttl),clock,w.id,undefined,guard);

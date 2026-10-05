@@ -28,6 +28,12 @@ export async function dispatchProviderOperation(store: Store, node: Identity, re
     const existing = operationState(store, operationId);
     if (existing) {
       if (existing.principal !== principal || existing.grant_id !== current.grant_id) throw new AppError('permission_denied', 'Operation belongs to another grant.', 403, 3, 'permission_denied');
+      if (existing.state === 'failed') {
+        const payload = existing.result_json ? record(JSON.parse(String(existing.result_json))) : {};
+        const err = payload.error ? record(payload.error) : {};
+        throw new AppError(typeof err.code === 'string' ? err.code : 'permission_denied',
+          typeof err.message === 'string' ? err.message : 'Website login is not enabled.', 403, 3, 'permission_denied');
+      }
       if (route === 'run' && existing.input_hash !== inputHash) throw new AppError('operation_conflict', 'Operation ID belongs to different parameters.', 409);
       if (route === 'run' && existing.state === 'approval_required') {
         previous = JSON.parse(String(existing.result_json));
@@ -40,7 +46,7 @@ export async function dispatchProviderOperation(store: Store, node: Identity, re
       if (route === 'operation') throw new AppError('operation_not_found', 'Operation was not found.', 404);
       // Reserve the full per-purchase budget before dispatch. Unknown, failed and
       // pending operations retain their reservation; no automatic refund or retry.
-      const usage = store.db.prepare('SELECT COUNT(*) AS calls, COALESCE(SUM(reserved_minor),0) AS amount FROM provider_operations WHERE grant_id=?').get(current.grant_id)!;
+      const usage = store.db.prepare("SELECT COUNT(*) AS calls, COALESCE(SUM(reserved_minor),0) AS amount FROM provider_operations WHERE grant_id=? AND state!='failed'").get(current.grant_id)!;
       const reservation = current.action === 'stripe.mpp.pay' ? current.max_amount_minor : 0;
       if (Number(usage.calls) >= current.max_calls || Number(usage.amount) + reservation > current.max_amount_minor) throw new AppError('budget_exceeded', 'Grant call or payment budget is exhausted.', 403, 3, 'permission_denied');
       store.db.prepare('INSERT INTO provider_operations VALUES (?,?,?,?,?,?,?,?,NULL)').run(operationId, current.grant_id, principal, inputHash, current.action, clock(), 'executing', reservation);
@@ -67,7 +73,12 @@ export async function dispatchProviderOperation(store: Store, node: Identity, re
         });
       } catch (error) {
         const safe = publicError(error);
-        store.transaction(() => { store.db.prepare("UPDATE provider_operations SET state='result_unknown',result_json=? WHERE operation_id=?").run(JSON.stringify({ error: safe.body.error }), operationId); event(store, 'operation_result_unknown', principal, operationId, clock()); });
+        const refused = grant.action === 'website.session.login' && safe.body.error.code === 'executor_unavailable';
+        store.transaction(() => {
+          store.db.prepare('UPDATE provider_operations SET state=?,result_json=? WHERE operation_id=?')
+            .run(refused ? 'failed' : 'result_unknown', JSON.stringify({ error: safe.body.error }), operationId);
+          event(store, refused ? 'operation_failed' : 'operation_result_unknown', principal, operationId, clock());
+        });
       } finally { inFlight.delete(key); pending.delete(key); }
     })();
     pending.set(key,task);
