@@ -12,7 +12,11 @@ import { openVault, recovery, VAULT_REQUESTS_CAP, type Connection, type Credenti
 import { connectionConfig, executeProvider, integer, providerParams, supports } from './providers.js';
 import { payMpp, type PaymentContinuation } from './mpp-payment.js';
 import { sessionPath } from './vault-client.js';
-import { executeWebsiteLogin, refuseWebsiteLogin, WEBSITE_LOGIN_ACTION, type WebsiteLoginExecutor } from './website-login.js';
+import {
+  addCredentialOrigin, createWebsiteSession, originAllowed, revokeWebsiteSessions, websiteSessionTtl, writeAudit,
+  type AuditResult,
+} from './website-sessions.js';
+import { executeWebsiteLogin, refuseWebsiteLogin, WEBSITE_LOGIN_ACTION, websiteOrigin, type WebsiteLoginExecutor } from './website-login.js';
 
 export interface RunningVault { server:Server;vaultId:string;owner:string;expiresAt:number;close():Promise<void> }
 export function requireBoundVault(store:Store,token:string,vaultId:string):void {
@@ -72,7 +76,7 @@ export async function unlockVault(dir:string,recoveryFile:string,nodeDir:string,
   async function execute(command:string,args:Record<string,unknown>) {
     if(beforeExecute)await beforeExecute();
     if(closing || clock()>=expiresAt)throw new AppError('node_locked','Vault unlock expired.',403,3,'node_locked');
-    if (['node.bind','grant.approve','grant.revoke','demo.init','provider.execute'].includes(command)) {
+    if (['node.bind','grant.approve','grant.revoke','demo.init','provider.execute','credential.revoke','credential.origin.add'].includes(command)) {
       if(args._node_dir!==configuredNodeDir) throw new AppError('node_mismatch','CLI Node directory differs from the unlocked vault session.');
       args={...args};delete args._node_dir;
     }
@@ -105,7 +109,51 @@ export async function unlockVault(dir:string,recoveryFile:string,nodeDir:string,
       try{save();}catch(error){vault.data.credentials.pop();forget(args,evicted);throw error;}
       return metadata;
     }
-    if(command==='credential.remove'){exact(['credential_id']);const id=textField(args.credential_id,64);const index=vault.data.credentials.findIndex(c=>c.id===id);if(index<0)throw new AppError('credential_not_found','Credential was not found.');const old=vault.data.credentials.splice(index,1)[0]!;try{save();}catch(error){vault.data.credentials.splice(index,0,old);throw error;}return {credential_id:id,removed:true};}
+    if(command==='credential.remove'){
+      exact(['credential_id']);const id=textField(args.credential_id,64);const index=vault.data.credentials.findIndex(c=>c.id===id);
+      if(index<0)throw new AppError('credential_not_found','Credential was not found.');
+      if(vault.data.credentials[index]!.kind==='website_login')throw new AppError('invalid_kind','Use credential revoke for website login credentials.');
+      const old=vault.data.credentials.splice(index,1)[0]!;try{save();}catch(error){vault.data.credentials.splice(index,0,old);throw error;}return {credential_id:id,removed:true};
+    }
+    if(command==='credential.origin.add') {
+      exact(['credential_id','origin']);
+      const id=textField(args.credential_id,64);
+      const credential=vault.data.credentials.find(c=>c.id===id);
+      if(!credential||credential.kind!=='website_login')throw new AppError('credential_not_found','Select a website login credential.');
+      const origin=websiteOrigin(args.origin);
+      const store=new Store(configuredNodeDir);
+      try { addCredentialOrigin(store,id,origin); return { credential_id:id, origin, allowlisted:true }; }
+      finally { store.close(); }
+    }
+    if(command==='credential.revoke') {
+      exact(['credential_id']);
+      if(!bound)throw new AppError('owner_not_initialized','Bind this vault first.');
+      const id=textField(args.credential_id,64);
+      const index=vault.data.credentials.findIndex(c=>c.id===id);
+      if(index<0)throw new AppError('credential_not_found','Credential was not found.');
+      if(vault.data.credentials[index]!.kind!=='website_login')throw new AppError('invalid_kind','Only website login credentials can be revoked this way.');
+      const node=await loadIdentity(configuredNodeDir,'node');
+      const store=new Store(configuredNodeDir);
+      try {
+        const now=clock();
+        const removed=vault.data.credentials.splice(index,1)[0]!;
+        const jars=vault.data.session_jars.filter(j=>j.credential_id===id);
+        vault.data.session_jars=vault.data.session_jars.filter(j=>j.credential_id!==id);
+        const connections=vault.data.connections.filter(c=>c.config.credential_id===id).map(c=>c.id);
+        try { save(); }
+        catch(error){ vault.data.credentials.splice(index,0,removed); vault.data.session_jars.push(...jars); throw error; }
+        removed.value='';
+        for(const jar of jars)jar.value='';
+        const revokedSessions=revokeWebsiteSessions(store,id,now);
+        writeAudit(store,{credential_id:id,agent_id:vault.owner.id,origin:'-',started_at:now,result:'revoked'});
+        let invalidated=0;
+        if(connections.length){
+          const grants=store.db.prepare(`SELECT grant_id FROM grants WHERE revoked_at IS NULL AND connection_id IN (${connections.map(()=>'?').join(',')})`).all(...connections);
+          for(const row of grants){ await revokeGrant(store,node,vault.owner,String(row.grant_id),clock,guard); invalidated++; }
+        }
+        return { credential_id:id, revoked:true, ciphertext_deleted:true, revoked_sessions:revokedSessions, invalidated_grants:invalidated };
+      } finally { store.close(); }
+    }
     if(command==='connection.list'){exact(['wallet_id'],['after']);const w=wallet(args.wallet_id);const result=page(vault.data.connections.filter(c=>c.wallet_id===w.id));return {connections:result.values.map(({config,...metadata})=>metadata),next_cursor:result.next_cursor,complete:result.complete};}
     if(command==='connection.add') {
       exact(['wallet_id','name','provider','config'],['request_id']);const replay=replayed(command,args);if(replay)return replay;
@@ -114,7 +162,14 @@ export async function unlockVault(dir:string,recoveryFile:string,nodeDir:string,
       const value:Connection={id:'connection_'+randomUUID(),wallet_id:w.id,name:displayName(args.name),provider:args.provider as Connection['provider'],config:connectionConfig(args.provider as Connection['provider'],args.config,vault.data,w.id)};
       const metadata={id:value.id,wallet_id:value.wallet_id,name:value.name,provider:value.provider};
       vault.data.connections.push(value);w.connections.push(value.id);const evicted=remember(command,args,metadata);
-      try{save();}catch(error){vault.data.connections.pop();w.connections.pop();forget(args,evicted);throw error;}
+      try{
+        if(value.provider==='website'){
+          const origins=new Store(configuredNodeDir);
+          try { addCredentialOrigin(origins,String(value.config.credential_id),websiteOrigin(value.config.origin)); }
+          finally { origins.close(); }
+        }
+        save();
+      }catch(error){vault.data.connections.pop();w.connections.pop();forget(args,evicted);throw error;}
       return metadata;
     }
     if(command==='provider.execute') {
@@ -137,13 +192,43 @@ export async function unlockVault(dir:string,recoveryFile:string,nodeDir:string,
         check();
         const connection=vault.data.connections.find(c=>c.id===grant.connection_id&&c.wallet_id===grant.wallet_id&&supports(c,grant.action));
         if(!connection)throw new AppError('connection_unavailable','Granted connection is unavailable.');
+        const credential=vault.data.credentials.find(c=>c.id===connection.config.credential_id&&c.wallet_id===grant.wallet_id);
+        if(grant.action===WEBSITE_LOGIN_ACTION && (!credential||!credential.value))
+          throw new AppError('credential_revoked','This website login credential has been revoked.',403,3,'permission_denied');
         connectionConfig(connection.provider,connection.config,vault.data,grant.wallet_id);
-        const credential=vault.data.credentials.find(c=>c.id===connection.config.credential_id&&c.wallet_id===grant.wallet_id)!;
+        if(!credential||!credential.value)throw new AppError('credential_not_found','Select a credential in this wallet.');
         const params=providerParams(grant.action,args.params);
         const secret=credential.value;
         try {
+          if(grant.action===WEBSITE_LOGIN_ACTION) {
+            const origin=websiteOrigin(connection.config.origin);
+            const credentialId=String(connection.config.credential_id);
+            const started=clock();
+            const audit=(result:AuditResult,handle?:string)=>{ writeAudit(store,{credential_id:credentialId,agent_id:grant.principal,origin,started_at:started,result,...(handle?{session_handle_id:handle}:{})}); };
+            try {
+              if(!originAllowed(store,credentialId,origin))throw new AppError('origin_not_allowed','Website origin is not on this credential allowlist.',403,3,'permission_denied');
+              const outcome=await executeWebsiteLogin(connection,secret,params,check,websiteLogin);
+              let handle:string|undefined;
+              if(outcome.result.outcome==='authenticated') {
+                const ttl=websiteSessionTtl(store,connection.config.session_ttl);
+                const session=createWebsiteSession(store,{credential_id:credentialId,agent_id:grant.principal,origin,now:clock(),ttl});
+                vault.data.session_jars.push({handle_id:session.handle_id,credential_id:credentialId,value:'[]'});
+                try { save(); }
+                catch(error){ vault.data.session_jars.pop(); throw error; }
+                (outcome.result as Record<string,unknown>).session_handle=session.handle_id;
+                (outcome.result as Record<string,unknown>).expires_at=session.expires_at;
+                handle=session.handle_id;
+              }
+              audit(outcome.result.outcome,handle);
+              return vaultReply(outcome, secret) as typeof outcome;
+            } catch (error) {
+              const safe=publicError(error, secret);
+              const refused=['executor_unavailable','origin_not_allowed','credential_revoked'].includes(safe.body.error.code);
+              audit(safe.body.error.code==='executor_failed'||safe.body.error.code==='secret_leak_blocked'?'failed':'refused');
+              throw new AppError(safe.body.error.code, safe.body.error.message, refused?403:safe.httpStatus, refused?3:safe.exitCode, refused?'permission_denied':safe.body.status);
+            }
+          }
           const outcome=grant.action==='stripe.mpp.pay'?await payMpp(connection,secret,textField(args.operation_id,36),grant.max_amount_minor,check,args.previous as PaymentContinuation|undefined)
-            :grant.action===WEBSITE_LOGIN_ACTION?await executeWebsiteLogin(connection,secret,params,check,websiteLogin)
             :await (async()=>{check();const result=await executeProvider(connection,grant.action,params,secret);check();return {state:'completed' as const,result};})();
           return vaultReply(outcome, secret) as typeof outcome;
         } catch (error) {
