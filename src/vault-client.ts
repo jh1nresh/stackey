@@ -23,7 +23,7 @@ export async function vaultRequest(dir: string, command: string, args: Record<st
   if(!stat.isSocket() || stat.uid!==process.getuid?.() || (stat.mode&0o077)!==0) throw new AppError('unsafe_session','Vault session socket must be private.');
   const payload=JSON.stringify({command,args});
   if(Buffer.byteLength(payload)>65536) throw new AppError('request_too_large','Vault request exceeds 64 KiB.');
-  const timeout = timeoutMs ?? (command==='provider.execute'?45000:2000);
+  const timeout = timeoutMs ?? (command==='provider.execute'?(args.action==='website.session.login'?300000:45000):2000);
   return new Promise<any>((resolve,reject)=> {
     let timedOut=false;
     const pending=request({socketPath:socket,path:'/owner',method:'POST',headers:{authorization:'Bearer '+token,'content-type':'application/json','content-length':Buffer.byteLength(payload)}},response=> {

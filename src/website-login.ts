@@ -10,6 +10,7 @@ export interface WebsiteLoginInput { origin: string; username: string; password:
 export interface WebsiteLoginOutcome {
   state: 'completed' | 'human_required';
   reason?: WebsiteHumanReason;
+  jar?: string;
 }
 export type WebsiteLoginExecutor = (input: WebsiteLoginInput) => Promise<WebsiteLoginOutcome>;
 
@@ -85,24 +86,35 @@ export async function executeWebsiteLogin(
   params: Record<string, unknown>,
   check: () => void,
   executor: WebsiteLoginExecutor,
-): Promise<{ state: 'completed'; result: ReturnType<typeof sanitize> }> {
+): Promise<{ state: 'completed'; result: ReturnType<typeof sanitize>; jar?: string }> {
   if (connection.provider !== 'website') throw new AppError('action_not_allowed', 'Connection does not support this action.');
   if (Object.keys(params).length !== 0) throw new AppError('invalid_parameters', 'Website login accepts no agent parameters.');
   const origin = websiteOrigin(connection.config.origin);
   const username = websiteUsername(connection.config.username);
   check();
   let snapshot: OutcomeSnapshot;
+  let jar: string | undefined;
   try {
-    snapshot = snapshotOutcome(await executor({ origin, username, password: secret }));
-  } catch {
+    const raw = await executor({ origin, username, password: secret });
+    snapshot = snapshotOutcome(raw);
+    const stored = Reflect.get(raw, 'jar');
+    if (typeof stored === 'string') jar = stored;
+  } catch (error) {
     if (executor === refuseWebsiteLogin) {
       throw new AppError('executor_unavailable', 'Website login is not enabled. This Node has no login executor.', 403, 3, 'permission_denied');
+    }
+    if (error instanceof AppError && error.code === 'origin_not_allowed') {
+      throw new AppError('origin_not_allowed', 'Website origin is not on this credential allowlist.', 403, 3, 'permission_denied');
     }
     throw new AppError('executor_failed', 'Website login executor failed.', 502, 4, 'failed');
   }
   check();
-  if (containsSecret(snapshot, secret)) {
+  if (containsSecret(snapshot, secret) || (!!secret && !!jar && jar.includes(secret))) {
     throw new AppError('secret_leak_blocked', 'Login result attempted to expose vault material.');
   }
-  return { state: 'completed', result: scrubValue(sanitize(origin, snapshot), secret) as ReturnType<typeof sanitize> };
+  return {
+    state: 'completed',
+    result: scrubValue(sanitize(origin, snapshot), secret) as ReturnType<typeof sanitize>,
+    ...(jar ? { jar } : {}),
+  };
 }

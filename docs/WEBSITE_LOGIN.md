@@ -1,6 +1,6 @@
 # Website login grants (design)
 
-Date: 2026-10-04. Status: design plus a fail-closed local slice. This document is the contract for storing a website login in the mnemonic-backed vault and letting a paired agent request a **daemon-side** login after Owner approval. It does not authorize real browser automation, live provider calls, or handing a password to an agent.
+Date: 2026-10-15. Status: control plane plus an optional macOS Playwright runner for GitHub and Google account login. The agent never receives the password or cookie jar. Live dogfood is Owner-machine (Mac) only.
 
 Related contracts: [SPEC.md](SPEC.md), [CLI_VAULT.md](CLI_VAULT.md), [CLI_AUTHORIZATION.md](CLI_AUTHORIZATION.md). Reachability remains `http://127.0.0.1:<port>` only. Cloud access from an official Grok Bot is still unverified.
 
@@ -54,7 +54,7 @@ Responsibilities stay where they already are:
 - **Vault daemon**: only process that decrypts `website_login`. Owner socket, not the agent HTTP API.
 - **Node**: pairing, DPoP, grant version, call budget, operation durability. Never reads the password.
 - **Agent CLI**: capability discovery and operation polling. Stdout is a JSON envelope. No secret export.
-- **Executor**: injectable function. Production default **refuses**. Tests inject a mock. No Playwright, no live navigation.
+- **Executor**: injectable function. Production default **refuses**. `STACKEY_WEBSITE_RUNNER=1` on macOS enables a headed Playwright runner with per-site adapters for `https://github.com` and `https://accounts.google.com` only. Tests use a mock or an in-process HTTPS fixture. Password fill is `locator.fill` inside the vault process.
 
 ### 3.1 Where the credential is decrypted
 
@@ -78,15 +78,17 @@ The executor may use the password. It must not return it. `executeWebsiteLogin` 
 
 Vault replies go through `vaultReply()`. Errors at that boundary (and `publicError`) use a fixed `code → message` table; thrown `AppError` text is never returned. The Node persists `{ error: { code } }` only. A scrubber then replaces the active secret and its base64/URL-encoded forms in replies, before any logger write, matching the full secret rather than public substrings such as `test` inside an origin.
 
-A future real executor (out of scope) would:
+The Playwright runner (flagged, macOS dogfood):
 
-1. Open an isolated browser profile owned by the daemon, never by the agent.
-2. Navigate only to the pinned origin’s login entry (per-site adapter, not an agent-supplied URL).
-3. Fill the form and submit.
-4. Treat cookies as daemon memory, wipe them when the operation ends or the grant is revoked.
-5. Return only the sanitized outcome.
+1. Resolves the adapter host and refuses private/loopback/link-local DNS (rebinding).
+2. Opens an isolated headed Chrome/Chromium context owned by the daemon (no tracing, video, or screenshots).
+3. Navigates only to the adapter entry URL (`https://github.com/login` or Google identifier with `continue` pinned to `accounts.google.com`).
+4. Refuses if the page or fill frame origin is not the allowlisted origin (including off-origin redirects before fill).
+5. Fills username/password with `locator.fill` only (never `page.evaluate` with the secret) and submits.
+6. On MFA/OTP/passkey/captcha/device confirmation: **does not bypass**. Headed mode waits for the Owner to complete the step in that window; otherwise returns `human_required` with a fixed reason.
+7. On success, stores the cookie jar in vault `session_jars` under an opaque handle (TTL ≤ 30 min). The agent sees `{ origin, outcome, session_handle, expires_at }` only.
 
-It would **not** give the agent a cookie jar, CDP port, or screenshot of a filled password field.
+It does **not** give the agent a cookie jar, CDP port, or screenshot of a filled password field. `website.session.fetch` is still out of scope (login only).
 
 ### 3.3 Session cookie handling and blast radius
 
@@ -165,10 +167,10 @@ Fail closed. Default deny.
 | --- | --- | --- | --- |
 | **Compromised agent** | Agent has shell on the same OS user, or the model is jailbroken | Password never in responses, logs, or agent files. Grant is per pairing and revocable. DPoP binds requests to the agent key | Same-user agents can still read recovery files and the vault socket. SPEC already says 0600 is not Bot isolation |
 | **Replayed grant / operation** | Attacker replays HTTP, DPoP, or operation ID | Nonce/jti consumption, body hash, grant version, `max_calls=1`, same-ID replay of sanitized result only | A real site login already performed cannot be undone |
-| **Malicious page** | Login URL is attacker-controlled; credential posted off-origin | Agent cannot supply a URL. Origin is pinned at connection add. Default executor does not network | A future executor must pin navigation and reject redirects off origin |
+| **Malicious page** | Login URL is attacker-controlled; credential posted off-origin | Agent cannot supply a URL. Origin is pinned at connection add. Runner uses a per-site entry URL and refuses off-origin pages/frames before fill | A real page can still observe a typed password. That is inherent to autofill |
 | **Exfiltration through page DOM** | Script on the login page reads the typed password or a new cookie | No real page in this slice. Future executor must not return DOM/HTML and must use an isolated profile | Any real browser fill can be observed by the page itself. That is inherent to password autofill |
 | **Log leakage** | Password appears in CLI JSON, Node logs, events, or thrown errors | Whitelisted result; `publicError` maps codes to a fixed message table; Node stores error codes only; secret scrubber; canary tests grep DB bytes, API responses, and logs | Host telemetry, swap, and core dumps are out of process control |
-| **Confused deputy / SSRF** | Executor fetches attacker hosts with the password | HTTPS origin allowlist; no IPs, IPv6 literals, localhost (including trailing-dot forms), userinfo, or ports. Default executor refuses | Per-site adapters still needed before any HTTP client is attached; DNS rebinding is a later runner check |
+| **Confused deputy / SSRF** | Executor fetches attacker hosts with the password | HTTPS origin allowlist; no IPs, IPv6 literals, localhost, userinfo, or ports; runner DNS must resolve public; off-origin redirect is `origin_not_allowed` | Only GitHub and Google adapters are shipped; other origins refuse |
 | **Owner socket theft** | Malware on the same user talks to the vault socket | Existing Unix socket + bearer session file mode 0600 | Not a cross-user boundary |
 
 ## 6. What is feasible by 12 October 2026
@@ -179,14 +181,14 @@ Feasible in this repository, locally, with Node 22.18:
 - Pin a website connection to one HTTPS origin
 - Per-agent grant with Owner approval and revoke
 - Single-use (`max_calls=1`) DPoP operation that invokes a daemon-side executor
-- Mock executor for tests; production default refuses (no live navigation)
-- Negative tests: no approval, revoked grant, reused grant, secret-leak scan
+- Mock executor for tests; production default refuses
+- Optional macOS Playwright runner (`STACKEY_WEBSITE_RUNNER=1`) for GitHub and Google, fixture-tested off-origin refuse / 2FA pause / canary no-leak
+- Negative tests: no approval, revoked grant, reused grant, secret-leak scan, DNS rebinding
 
 Not feasible, and not attempted:
 
-- Real login to Privy or any other live site
-- Email OTP, passkeys, captcha, or device-confirmation completion
-- Returning or persisting website cookies
+- Automating OTP, passkeys, captcha, or device confirmation (paused as `human_required`)
+- Returning cookies to the agent, or session reuse beyond the 30-minute handle
 - Cloud / HTTPS reachability from Grok Bot
 - A general browser tool (“go to any URL and sign in”)
 - Claiming the agent can operate a dashboard unattended after one approval
@@ -209,8 +211,9 @@ stackey credential import --wallet wallet_demo --name "Privy dashboard" \
   --kind website_login --secret-file .stackey/website-secret.json \
   --vault-dir .stackey/vault
 
-# {"origin":"https://dashboard.privy.io","username":"owner@example.com","credential_id":"credential_..."}
-stackey connection add --wallet wallet_demo --name Privy \
+# {"origin":"https://github.com","username":"FOUNDER_USERNAME","credential_id":"credential_..."}
+# Google: origin https://accounts.google.com
+stackey connection add --wallet wallet_demo --name GitHub \
   --provider website --config-file .stackey/website-config.json \
   --vault-dir .stackey/vault
 
@@ -219,7 +222,7 @@ stackey node approve PAIRING_ID --principal FULL_FINGERPRINT \
   --wallet wallet_demo --ttl 300 --max-calls 1 --max-amount-minor 0 \
   --vault-dir .stackey/vault --data-dir .stackey/vault-node
 
-# Agent: empty params. Poll the operation. Expect executor_unavailable unless a test mock is injected.
+# macOS dogfood: STACKEY_WEBSITE_RUNNER=1 vault unlock (headed). Agent never sees the password.
 stackey run website.session.login --state-dir .stackey/agents/new-agent
 stackey audit --data-dir .stackey/vault-node
 stackey credential origin-add CREDENTIAL_ID --origin https://dashboard.example.test \

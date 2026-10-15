@@ -16,7 +16,8 @@ import {
   addCredentialOrigin, createWebsiteSession, originAllowed, revokeWebsiteSessions, websiteSessionTtl, writeAudit,
   type AuditResult,
 } from './website-sessions.js';
-import { executeWebsiteLogin, refuseWebsiteLogin, WEBSITE_LOGIN_ACTION, websiteOrigin, type WebsiteLoginExecutor } from './website-login.js';
+import { executeWebsiteLogin, WEBSITE_LOGIN_ACTION, websiteOrigin, type WebsiteLoginExecutor } from './website-login.js';
+import { websiteRunnerFromEnv } from './website-runner.js';
 
 export interface RunningVault { server:Server;vaultId:string;owner:string;expiresAt:number;close():Promise<void> }
 export function requireBoundVault(store:Store,token:string,vaultId:string):void {
@@ -27,7 +28,7 @@ export function requireBoundVault(store:Store,token:string,vaultId:string):void 
     throw new AppError('node_locked','This vault session is no longer bound to the Node.',403,3,'node_locked');
   }
 }
-export async function unlockVault(dir:string,recoveryFile:string,nodeDir:string,ttl=900,clock=seconds,beforeExecute?:()=>Promise<void>,websiteLogin:WebsiteLoginExecutor=refuseWebsiteLogin):Promise<RunningVault> {
+export async function unlockVault(dir:string,recoveryFile:string,nodeDir:string,ttl=900,clock=seconds,beforeExecute?:()=>Promise<void>,websiteLogin:WebsiteLoginExecutor=websiteRunnerFromEnv()):Promise<RunningVault> {
   if(!Number.isInteger(ttl)||ttl<60||ttl>3600)throw new AppError('invalid_ttl','Vault unlock lifetime must be 60–3600 seconds.');
   const vault=await openVault(dir,await recovery(recoveryFile));
   const pointer=sessionPath(dir);
@@ -212,7 +213,7 @@ export async function unlockVault(dir:string,recoveryFile:string,nodeDir:string,
               if(outcome.result.outcome==='authenticated') {
                 const ttl=websiteSessionTtl(store,connection.config.session_ttl);
                 const session=createWebsiteSession(store,{credential_id:credentialId,agent_id:grant.principal,origin,now:clock(),ttl});
-                vault.data.session_jars.push({handle_id:session.handle_id,credential_id:credentialId,value:'[]'});
+                vault.data.session_jars.push({handle_id:session.handle_id,credential_id:credentialId,value:outcome.jar ?? '[]'});
                 try { save(); }
                 catch(error){ vault.data.session_jars.pop(); throw error; }
                 (outcome.result as Record<string,unknown>).session_handle=session.handle_id;
@@ -220,7 +221,7 @@ export async function unlockVault(dir:string,recoveryFile:string,nodeDir:string,
                 handle=session.handle_id;
               }
               audit(outcome.result.outcome,handle);
-              return vaultReply(outcome, secret) as typeof outcome;
+              return vaultReply({ state: outcome.state, result: outcome.result }, secret);
             } catch (error) {
               const safe=publicError(error, secret);
               const refused=['executor_unavailable','origin_not_allowed','credential_revoked'].includes(safe.body.error.code);

@@ -25,6 +25,7 @@ const help = `Stackey — local agent authorization demo
 
   stackey vault init --recovery-out <new-private-file> [--vault-dir .stackey/vault]
   stackey vault unlock --recovery-file <private-file> [--vault-dir ...] [--data-dir ...] [--ttl 900]
+      # macOS: STACKEY_WEBSITE_RUNNER=1 enables GitHub/Google Playwright login (headed; 2FA waits for the owner)
   stackey vault status | lock [--vault-dir ...]
   stackey vault recover-session [--vault-dir ...]
   stackey vault backup --out <new-private-file> [--vault-dir ...]

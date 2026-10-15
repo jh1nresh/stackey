@@ -24,6 +24,7 @@
     "jose": "6.2.12",
     "mppx": "0.13.1",
     "oauth4webapi": "3.8.8",
+    "playwright": "^1.56.1",
     "stripe": "23.0.0"
   },
   "devDependencies": {

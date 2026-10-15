@@ -20,5 +20,7 @@ node_modules/
 .vercel/
 dist/
 coverage/
+test-results/
+playwright-report/
 *.log
 .DS_Store
