@@ -4,9 +4,10 @@ import { dirname, join, resolve } from 'node:path';
 import { calculateJwkThumbprint, type JWK } from 'jose';
 import { generateMnemonic, mnemonicToSeed, validateMnemonic } from '@scure/bip39';
 import { wordlist } from '@scure/bip39/wordlists/english.js';
-import { createBackupState } from './backup-state.js';
+import { createBackupState, updateBackupState } from './backup-state.js';
 import { AppError, displayName, record, textField } from './contracts.js';
 import { privateDirectory, readPrivateJson, writePrivateJson, type Identity } from './identity.js';
+import { storeVaultKey } from './keychain.js';
 
 export interface Wallet { id: string; name: string; connections: string[] }
 export interface Credential { id: string; wallet_id: string; name: string; kind: 'password' | 'api_key' | 'private_key' | 'website_login'; value: string }
@@ -142,6 +143,7 @@ function persist(path: string, file: File, create=false) {
   try { renameSync(temporary,path); } catch(error) { unlinkSync(temporary); throw error; }
 }
 export function vaultPath(dir: string) { return join(privateDirectory(dir),'vault.json'); }
+export function peekVaultId(dir: string): string { return read(vaultPath(dir)).vault_id; }
 export async function initializeVault(dir: string, recoveryOut: string) {
   const path=vaultPath(dir); const output=resolve(recoveryOut); privateDirectory(dirname(output));
   if (existsSync(path) || existsSync(output)) throw new AppError('output_exists','Vault and recovery output must both be new files.');
@@ -157,7 +159,9 @@ export async function initializeVault(dir: string, recoveryOut: string) {
     const recoveryFd=openSync(output,'r');try{fsyncSync(recoveryFd);}finally{closeSync(recoveryFd);}
     persist(path,{...h,wrapped_key,data:encrypted},true);
     createBackupState(dir,h.vault_id,output);
-    return {vault_id:h.vault_id,owner:h.owner,vault_file:path,recovery_file:output,status:'locked'};
+    const keychain_unlock=await storeVaultKey(dir,h.vault_id,mnemonic);
+    if(keychain_unlock) updateBackupState(dir,{keychain_unlock:true});
+    return {vault_id:h.vault_id,owner:h.owner,vault_file:path,recovery_file:output,status:'locked',keychain_unlock};
   } finally { derived.wrapping.fill(0); master.fill(0); }
 }
 export async function openVault(dir: string, mnemonic: string) {

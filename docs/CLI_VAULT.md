@@ -18,12 +18,14 @@ node dist/src/cli.js node start --data-dir .stackey/vault-node --port 45822
 
 建立後 sidecar `backup-state.json` 標記 `backed_up: false`。`stackey setup`、`vault status`（locked 或 unlocked）與 `stackey status` 會持續顯示 `backup_nudge`（`This vault is not backed up. Run stackey backup ...`），直到之後的 backup 流程清除。Recovery 檔案是明文復原材料，請保管在 agent 無法存取的位置並備份。
 
-另一個終端機解鎖，保持前景程序執行：
+另一個終端機解鎖，保持前景程序執行。macOS 預設走 Keychain／Touch ID，不必再讀明文 recovery 檔：
 
 ```bash
 node dist/src/cli.js vault unlock --vault-dir .stackey/vault \
-  --recovery-file .stackey/recovery.json --data-dir .stackey/vault-node --ttl 900
+  --data-dir .stackey/vault-node --ttl 900
 ```
+
+`--recovery-file` 仍可用於尚未寫入 Keychain 的裝置，或作為助記詞復原路徑。Linux 測試／開發後端是 vault 目錄下的 0600 file keychain，不是生物辨識。
 
 第三個終端機執行 Owner 命令：
 
@@ -106,6 +108,7 @@ node dist/src/cli.js vault restore --vault-dir .stackey/restored-vault \
 - v1 是單一加密 vault payload，多 wallet 為權限 context；尚未採各 wallet 獨立資料加密金鑰或支援跨 Node 同步。
 - Session 在私有 Unix socket 中提供有限 Owner 命令，權限來源是同 OS 使用者與私有 session file。這不是 agent 與 Owner 的強 runtime 隔離；同使用者的任意 shell 權限仍可讀 recovery 檔案或管理 session。
 - Node／agent 原有私鑰檔案未加密；新的 seed-backed Owner 私鑰不落盤。JS 記憶體中的字串不能保證全部清除；鎖定會清理引用與 key buffer，程序結束後由 OS 回收。
-- 只支援 macOS／Linux、單一 writer、4 MiB vault、每類最多 1000 筆。沒有 Keychain 日常解鎖、密碼改版或防惡意舊密文 rollback 的硬體根。
+- macOS 日常解鎖把助記詞放在 Keychain，`SecAccessControl` `.userPresence`（Touch ID 或裝置密碼）。secret 經 helper stdin，不進 argv。這仍是同一 macOS 使用者的 Keychain 項目：有裝置密碼的人可以解鎖，不是獨立硬體根，也不是 agent 隔離。Linux 檔案後端與明文 recovery 同等級。
+- 只支援 macOS／Linux、單一 writer、4 MiB vault、每類最多 1000 筆。沒有密碼改版或防惡意舊密文 rollback 的硬體根。
 
 驗證：`npm run typecheck`、`npm test`，包含真實 CLI init／unlock／lock、密文無秘密、錯誤 seed／篡改、備份復原、舊權限失效、多 wallet／分頁與鎖定後拒絕。

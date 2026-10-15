@@ -1,5 +1,6 @@
-import { existsSync, lstatSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
-import { join, resolve } from 'node:path';
+import { randomUUID } from 'node:crypto';
+import { closeSync, existsSync, fsyncSync, lstatSync, mkdirSync, openSync, readFileSync, renameSync, unlinkSync, writeFileSync } from 'node:fs';
+import { dirname, join, resolve } from 'node:path';
 import { calculateJwkThumbprint, exportJWK, generateKeyPair, importJWK, type JWK } from 'jose';
 import { AppError, invalid, record, textField } from './contracts.js';
 
@@ -35,6 +36,14 @@ export function readPrivateJson(path: string): unknown {
 export function writePrivateJson(path: string, value: unknown): void {
   // Exclusive create: never replace another identity, invitation or receipt.
   writeFileSync(path, JSON.stringify(value) + '\n', { mode: 0o600, flag: 'wx' });
+}
+
+export function replacePrivateJson(path: string, value: unknown): void {
+  const text = JSON.stringify(value) + '\n';
+  const temporary = join(dirname(resolve(path)), '.replace-' + randomUUID());
+  const fd = openSync(temporary, 'wx', 0o600);
+  try { writeFileSync(fd, text); fsyncSync(fd); } finally { closeSync(fd); }
+  try { renameSync(temporary, path); } catch (error) { unlinkSync(temporary); throw error; }
 }
 
 export function publicKey(value: unknown, algorithm: 'EdDSA' | 'ES256'): JWK {

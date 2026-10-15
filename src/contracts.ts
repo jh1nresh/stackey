@@ -70,6 +70,8 @@ export const PUBLIC_ERROR_MESSAGES: Record<string, string> = Object.freeze({
   invalid_ttl: 'Lifetime is outside the permitted range.',
   invalid_vault: 'Vault format, recovery material or integrity check failed.',
   invalid_wallet: 'Invalid wallet ID.',
+  keychain_denied: 'Keychain or Touch ID did not authorize this unlock.',
+  keychain_unavailable: 'Keychain unlock is unavailable. Use --recovery-file or run stackey setup on this device.',
   invitation_used: 'Invitation has already been used.',
   link_busy: 'Another Link onboarding command is active.',
   link_login_expired: 'Link login expired. Cancel onboarding and start a fresh login.',
