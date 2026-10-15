@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { randomUUID } from 'node:crypto';
 import { parseArgs } from 'node:util';
 import { connect, localStatus } from './client.js';
-import { AppError, envelope, publicError, record, textField } from './contracts.js';
+import { AppError, envelope, publicError, record, textField, vaultReply } from './contracts.js';
 import { loadIdentity, privateDirectory, readPrivateJson, writePrivateJson } from './identity.js';
 import { startNode } from './node.js';
 import { issueInvitation } from './pairing.js';
@@ -17,6 +17,7 @@ import { ACTION, CONNECTION, initializeDemo, ORDER_SCHEMA } from './orders.js';
 import { approvePairing, initializeOwner, revokeGrant, seconds } from './policy.js';
 
 import { backupStatusFields, defaultRecoveryPath, withBackupStatus } from './backup-state.js';
+import { runPhraseBackup } from './backup-phrase.js';
 import { backupVault, initializeVault, recovery, restoreVault } from './vault.js';
 import { unlockVault } from './vault-session.js';
 import { sessionPath, vaultRequest } from './vault-client.js';
@@ -25,6 +26,7 @@ import { listAudit } from './website-sessions.js';
 const help = `Stackey — local agent authorization demo
 
   stackey setup [--vault-dir .stackey/vault] [--recovery-out .stackey/recovery.json]
+  stackey backup [--vault-dir .stackey/vault] [--recovery-file <private-file>]
   stackey vault init --recovery-out <new-private-file> [--vault-dir .stackey/vault]
   stackey vault unlock [--recovery-file <private-file>] [--vault-dir ...] [--data-dir ...] [--ttl 900]
       # macOS: Touch ID / Keychain unlock by default; --recovery-file is fallback
@@ -110,6 +112,12 @@ async function main() {
     if (positionals.length !== 2 || !['login', 'finish', 'cancel'].includes(sub ?? '')) throw new AppError('invalid_arguments', 'Use link login, finish or cancel.');
     const result = await onboardLink(vaultDir, textField(values.wallet, 64), sub as 'login' | 'finish' | 'cancel');
     output(envelope(String(result.status), result)); return;
+  }
+  if (command === 'backup' && positionals.length === 1) {
+    const recoveryFile = values['recovery-file'] === undefined ? undefined : resolve(textField(values['recovery-file']));
+    const result = await runPhraseBackup(vaultDir, { input: process.stdin, human: process.stderr }, recoveryFile);
+    output(envelope('ok', vaultReply(result)));
+    return;
   }
   if (command === 'setup' && positionals.length === 1) {
     const recoveryOut = resolve(values['recovery-out'] ?? defaultRecoveryPath(vaultDir));

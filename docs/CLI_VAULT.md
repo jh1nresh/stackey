@@ -16,7 +16,15 @@ node dist/src/cli.js node start --data-dir .stackey/vault-node --port 45822
 
 `stackey setup` 是 Uniswap-wallet 風格的一鍵建立：產生 24 個英文 BIP39 單字、寫入預設 0600 recovery 檔案（`.stackey/recovery.json`），**stdout 不顯示助記詞**。`vault init --recovery-out` 仍可用於指定路徑。助記詞不能放在 CLI 參數、聊天或 agent 工具結果。
 
-建立後 sidecar `backup-state.json` 標記 `backed_up: false`。`stackey setup`、`vault status`（locked 或 unlocked）與 `stackey status` 會持續顯示 `backup_nudge`（`This vault is not backed up. Run stackey backup ...`），直到之後的 backup 流程清除。Recovery 檔案是明文復原材料，請保管在 agent 無法存取的位置並備份。
+建立後 sidecar `backup-state.json` 標記 `backed_up: false`。`stackey setup`、`vault status`（locked 或 unlocked）與 `stackey status` 會持續顯示 `backup_nudge`（`This vault is not backed up. Run stackey backup ...`），直到 `stackey backup` 三詞確認成功。Recovery 檔案是明文復原材料，請保管在 agent 無法存取的位置並備份。
+
+手動備份（Uniswap 風格，助記詞只在按 Enter 後顯示在 stderr）：
+
+```bash
+node dist/src/cli.js backup --vault-dir .stackey/vault
+```
+
+確認 3 個隨機位置的單字後，會清除 nudge，並詢問是否安全覆寫後刪除明文 recovery 檔。stdout 仍是 JSON，不含助記詞。加密 vault 檔複製仍用 `vault backup`。
 
 另一個終端機解鎖，保持前景程序執行。macOS 預設走 Keychain／Touch ID，不必再讀明文 recovery 檔：
 
