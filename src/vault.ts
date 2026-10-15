@@ -4,6 +4,7 @@ import { dirname, join, resolve } from 'node:path';
 import { calculateJwkThumbprint, type JWK } from 'jose';
 import { generateMnemonic, mnemonicToSeed, validateMnemonic } from '@scure/bip39';
 import { wordlist } from '@scure/bip39/wordlists/english.js';
+import { createBackupState } from './backup-state.js';
 import { AppError, displayName, record, textField } from './contracts.js';
 import { privateDirectory, readPrivateJson, writePrivateJson, type Identity } from './identity.js';
 
@@ -155,6 +156,7 @@ export async function initializeVault(dir: string, recoveryOut: string) {
     writePrivateJson(output,{format:'stackey-recovery',version:1,mnemonic});
     const recoveryFd=openSync(output,'r');try{fsyncSync(recoveryFd);}finally{closeSync(recoveryFd);}
     persist(path,{...h,wrapped_key,data:encrypted},true);
+    createBackupState(dir,h.vault_id,output);
     return {vault_id:h.vault_id,owner:h.owner,vault_file:path,recovery_file:output,status:'locked'};
   } finally { derived.wrapping.fill(0); master.fill(0); }
 }

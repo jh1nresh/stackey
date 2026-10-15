@@ -10,11 +10,13 @@
 npm ci
 npm run build
 node dist/src/cli.js node init --data-dir .stackey/vault-node
-node dist/src/cli.js vault init --vault-dir .stackey/vault --recovery-out .stackey/recovery.json
+node dist/src/cli.js setup --vault-dir .stackey/vault
 node dist/src/cli.js node start --data-dir .stackey/vault-node --port 45822
 ```
 
-`vault init` 產生專供 Stackey 的 24 個英文 BIP39 單字，寫入指定 0600 recovery 檔案。stdout 只顯示路徑、公鑰身分與 locked 狀態。助記詞不能放在 CLI 參數、聊天或 agent 工具結果。Recovery 檔案是明文復原材料，請保管在 agent 無法存取的位置並備份。
+`stackey setup` 是 Uniswap-wallet 風格的一鍵建立：產生 24 個英文 BIP39 單字、寫入預設 0600 recovery 檔案（`.stackey/recovery.json`），**stdout 不顯示助記詞**。`vault init --recovery-out` 仍可用於指定路徑。助記詞不能放在 CLI 參數、聊天或 agent 工具結果。
+
+建立後 sidecar `backup-state.json` 標記 `backed_up: false`。`stackey setup`、`vault status`（locked 或 unlocked）與 `stackey status` 會持續顯示 `backup_nudge`（`This vault is not backed up. Run stackey backup ...`），直到之後的 backup 流程清除。Recovery 檔案是明文復原材料，請保管在 agent 無法存取的位置並備份。
 
 另一個終端機解鎖，保持前景程序執行：
 
