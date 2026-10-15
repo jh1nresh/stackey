@@ -43,9 +43,14 @@ node dist/src/cli.js credential import --wallet wallet_demo --name TestAPI \
   --kind api_key --secret-file .stackey/secret-input.json
 node dist/src/cli.js credential list --wallet wallet_demo
 node dist/src/cli.js credential remove CREDENTIAL_ID
+node dist/src/cli.js credential origin-add CREDENTIAL_ID --origin https://dashboard.example.test \
+  --vault-dir .stackey/vault --data-dir .stackey/vault-node
+node dist/src/cli.js credential revoke CREDENTIAL_ID \
+  --vault-dir .stackey/vault --data-dir .stackey/vault-node
+node dist/src/cli.js audit --data-dir .stackey/vault-node
 ```
 
-種類為 `password`、`api_key`、`private_key`、`website_login`。清單與匯入結果只回傳 ID、wallet、名称與種類；没有秘密匯出或通用簽章命令。輸入檔案不會自動刪除，Owner 自行管理其保管。`password` 仍是保管項目；網站自動登入是獨立的 `website` connection + `website.session.login` Grant，預設拒絕真實瀏覽器自動化。契約與威脅模型見 [WEBSITE_LOGIN.md](WEBSITE_LOGIN.md)。
+種類為 `password`、`api_key`、`private_key`、`website_login`。清單與匯入結果只回傳 ID、wallet、名称與種類；没有秘密匯出或通用簽章命令。輸入檔案不會自動刪除，Owner 自行管理其保管。`password` 仍是保管項目；網站自動登入是獨立的 `website` connection + `website.session.login` Grant，預設拒絕真實瀏覽器自動化。`website_login` 必須用 `credential revoke`（刪密文、清空 jar、立即作廢 website session 與對應 Grant，並寫入 append-only `audit_log`），不能用 `credential remove`。Allowlist 為精確 `https://host`，無萬用字元。`stackey audit` 讀取稽核列（憑證、agent、origin、時間、結果；不含秘密）。契約與威脅模型見 [WEBSITE_LOGIN.md](WEBSITE_LOGIN.md)。
 
 錢包、憑證和 connection 清單每頁 100 筆。當 `next_cursor` 非 null，使用 `--after NEXT_CURSOR` 取得下一頁，直到 `complete: true`。
 

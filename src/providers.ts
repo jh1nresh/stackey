@@ -22,10 +22,13 @@ export function connectionConfig(provider: Connection['provider'], raw: unknown,
   const config = record(raw);
   if (provider === 'demo') { exactFields(config, []); return config; }
   if (provider === 'website') {
-    exactFields(config, ['origin', 'username', 'credential_id']);
+    exactFields(config, ['origin', 'username', 'credential_id'], ['session_ttl']);
     const login = data.credentials.find(c => c.id === config.credential_id && c.wallet_id === walletId && c.kind === 'website_login');
     if (!login) throw new AppError('credential_not_found', 'Select a website login credential in this wallet.');
-    return { origin: websiteOrigin(config.origin), username: websiteUsername(config.username), credential_id: login.id };
+    const origin = websiteOrigin(config.origin);
+    const ttl = config.session_ttl === undefined ? undefined : integer(config.session_ttl, 60, 1800);
+    return { origin, username: websiteUsername(config.username), credential_id: login.id,
+      ...(ttl === undefined ? {} : { session_ttl: ttl }) };
   }
   const fields = provider === 'supabase' ? ['project_ref', 'credential_id'] : provider === 'vercel' ? ['model', 'credential_id'] :
     config.mode === 'mpp' ? ['mode', 'endpoint', 'network_id', 'credential_id', 'payment_method_id', 'amount_minor'] : ['mode', 'credential_id'];

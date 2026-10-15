@@ -1,5 +1,7 @@
 import assert from 'node:assert/strict';
+import { spawn, spawnSync } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
+import { once } from 'node:events';
 import { mkdtempSync, readFileSync, readdirSync, rmSync, statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
@@ -14,9 +16,16 @@ import { issueInvitation } from '../src/pairing.js';
 import { seconds } from '../src/policy.js';
 import { drainProviderOperations } from '../src/provider-operations.js';
 import { Store } from '../src/store.js';
-import { initializeVault } from '../src/vault.js';
+import { initializeVault, openVault, recovery } from '../src/vault.js';
 import { vaultRequest } from '../src/vault-client.js';
 import { unlockVault } from '../src/vault-session.js';
+import {
+  credentialOrigins,
+  originAllowed,
+  requireWebsiteSession,
+  websiteSession,
+  WEBSITE_SESSION_TTL_DEFAULT,
+} from '../src/website-sessions.js';
 import {
   executeWebsiteLogin,
   refuseWebsiteLogin,
@@ -28,6 +37,7 @@ import {
   type WebsiteLoginOutcome,
 } from '../src/website-login.js';
 
+const cli = resolve('dist/src/cli.js');
 const SECRET = 'fixture-website-password-DO-NOT-LEAK';
 const USER = 'owner@example.test';
 const ORIGIN = 'https://dashboard.example.test';
@@ -87,7 +97,8 @@ test('website origin and username fail closed on open redirects, local targets a
     'https://2130706433', 'https://Dashboard.Example.TEST', 'https://bücher.example',
     'https://evil.test/login', 'https://user:pass@evil.test', 'https://dashboard.example.test:444',
     'https://192.168.0.1', 'https://dashboard.example.test/?next=https://evil.test',
-    'https://dashboard.example.test.', 'https://dashboard.example.test..', 'https://example.com..']) {
+    'https://dashboard.example.test.', 'https://dashboard.example.test..', 'https://example.com..',
+    'https://*.example.test', 'https://example*.test', 'https://%.example.test']) {
     assert.throws(() => websiteOrigin(origin), error => error instanceof AppError && error.code === 'invalid_origin');
   }
   assert.throws(() => websiteUsername(' owner@example.test'));
@@ -199,8 +210,23 @@ function traces(store: Store, extra: unknown[] = []) {
     store.db.prepare('SELECT * FROM provider_operations').all(),
     store.db.prepare('SELECT * FROM events').all(),
     store.db.prepare('SELECT grant_id, pairing_id, principal, action, connection_id, max_calls, signed_grant FROM grants').all(),
+    store.db.prepare('SELECT * FROM audit_log').all(),
+    store.db.prepare('SELECT * FROM website_sessions').all(),
+    store.db.prepare('SELECT * FROM credential_origins').all(),
     ...extra,
   ];
+}
+
+function assertAuthenticated(result: Record<string, unknown>) {
+  assert.equal(result.source, 'website_login');
+  assert.equal(result.origin, ORIGIN);
+  assert.equal(result.outcome, 'authenticated');
+  assert.equal(typeof result.session_handle, 'string');
+  assert.match(String(result.session_handle), /^[A-Za-z0-9_-]{32,64}$/);
+  assert.equal(typeof result.expires_at, 'number');
+  assert.equal(result.cookie, undefined);
+  assert.equal(Object.keys(result).sort().join(','), 'expires_at,origin,outcome,session_handle,source');
+  return result as { session_handle: string; expires_at: number };
 }
 
 test('without approval a paired agent cannot start a website login', async t => {
@@ -244,8 +270,22 @@ test('approved single-use login runs in the daemon mock, then revoke and reuse a
   await drainProviderOperations(f.node.nodeId);
   const completed = await operation(f.agent, id);
   assert.equal(completed.status, 'ok');
-  assert.deepEqual((completed.data as any).result, { source: 'website_login', origin: ORIGIN, outcome: 'authenticated' });
+  const loginResult = assertAuthenticated((completed.data as any).result);
   assert.equal(received.password, true);
+  const sessionRow = websiteSession(f.store, loginResult.session_handle);
+  assert.ok(sessionRow);
+  assert.equal(sessionRow!.revoked_at, null);
+  assert.equal(sessionRow!.expires_at, loginResult.expires_at);
+  assert.equal(loginResult.expires_at - seconds() <= WEBSITE_SESSION_TTL_DEFAULT, true);
+  const audit = f.store.db.prepare('SELECT * FROM audit_log').all() as Record<string, unknown>[];
+  assert.equal(audit.length, 1);
+  assert.equal(audit[0]!.result, 'authenticated');
+  assert.equal(audit[0]!.origin, ORIGIN);
+  assert.equal(audit[0]!.credential_id, f.imported.id);
+  assert.equal(audit[0]!.agent_id, f.pairing.principal);
+  assert.equal(audit[0]!.session_handle_id, loginResult.session_handle);
+  assert.equal('password' in audit[0]! || 'secret' in audit[0]! || 'value' in audit[0]!, false);
+  assert.deepEqual(credentialOrigins(f.store, String(f.imported.id)), [ORIGIN]);
   assert.equal(calls.length, 1);
   assert.equal(leak(completed), false);
 
@@ -373,6 +413,8 @@ test('production default executor refuses with permission_denied and does not co
   await runOrders(f.agent, WEBSITE_LOGIN_ACTION, {}, again);
   await drainProviderOperations(f.node.nodeId);
   await assert.rejects(operation(f.agent, again), denied('executor_unavailable'));
+  const refused = f.store.db.prepare('SELECT result FROM audit_log').all();
+  assert.deepEqual(refused.map(row => row.result), ['refused', 'refused']);
   assert.equal(leak(traces(f.store)), false);
 });
 
@@ -408,6 +450,88 @@ test('canary password echoed by a mock site never reaches the agent, DB, or logs
   const echo: WebsiteLoginExecutor = async () => ({ state: 'completed', html: `<p>invalid password ${canary}</p>`, error: canary } as any);
   const ran = await approvedLogin(t, echo, canary);
   assert.equal(ran.result.status, 'ok');
-  assert.deepEqual((ran.result.data as any).result, { source: 'website_login', origin: ORIGIN, outcome: 'authenticated' });
+  assertAuthenticated((ran.result.data as any).result);
 });
+
+test('allowlist mismatch fails closed, writes a refused audit row, and does not consume the grant', async t => {
+  const f = await runtime(t, mockLogin([]));
+  await vaultRequest(f.dir, 'grant.approve', { ...f.owner, pairing_id: f.pairing.pairing_id,
+    principal: f.pairing.principal, action: WEBSITE_LOGIN_ACTION, ttl: 300, wallet_id: 'wallet_demo',
+    connection_id: f.connected.id, max_calls: 1, max_amount_minor: 0 });
+  assert.equal(originAllowed(f.store, String(f.imported.id), ORIGIN), true);
+  f.store.db.prepare('DELETE FROM credential_origins WHERE credential_id=?').run(String(f.imported.id));
+  assert.equal(originAllowed(f.store, String(f.imported.id), ORIGIN), false);
+  const id = randomUUID();
+  await runOrders(f.agent, WEBSITE_LOGIN_ACTION, {}, id);
+  await drainProviderOperations(f.node.nodeId);
+  await assert.rejects(operation(f.agent, id), denied('origin_not_allowed'));
+  const row = f.store.db.prepare('SELECT state, result_json FROM provider_operations WHERE operation_id=?').get(id);
+  assert.equal(row!.state, 'failed');
+  assert.deepEqual(JSON.parse(String(row!.result_json)), { error: { code: 'origin_not_allowed' } });
+  const audit = f.store.db.prepare('SELECT * FROM audit_log').all() as Record<string, unknown>[];
+  assert.equal(audit.length, 1);
+  assert.equal(audit[0]!.result, 'refused');
+  assert.equal(audit[0]!.origin, ORIGIN);
+  assert.equal(audit[0]!.session_handle_id, null);
+  await vaultRequest(f.dir, 'credential.origin.add', { ...f.owner, credential_id: f.imported.id, origin: ORIGIN });
+  const retry = randomUUID();
+  await runOrders(f.agent, WEBSITE_LOGIN_ACTION, {}, retry);
+  await drainProviderOperations(f.node.nodeId);
+  const completed = await operation(f.agent, retry);
+  assert.equal(completed.status, 'ok');
+  assertAuthenticated((completed.data as any).result);
+  await assert.rejects(vaultRequest(f.dir, 'credential.origin.add', { ...f.owner, credential_id: f.imported.id, origin: 'https://*.example.test' }),
+    error => error instanceof AppError && error.code === 'invalid_origin');
+});
+
+test('credential revoke deletes ciphertext, wipes jars, invalidates sessions and grants immediately, and writes an audit row', async t => {
+  const f = await runtime(t, mockLogin([]));
+  const grant = await vaultRequest(f.dir, 'grant.approve', { ...f.owner, pairing_id: f.pairing.pairing_id,
+    principal: f.pairing.principal, action: WEBSITE_LOGIN_ACTION, ttl: 300, wallet_id: 'wallet_demo',
+    connection_id: f.connected.id, max_calls: 1, max_amount_minor: 0 });
+  const id = randomUUID();
+  await runOrders(f.agent, WEBSITE_LOGIN_ACTION, {}, id);
+  await drainProviderOperations(f.node.nodeId);
+  const completed = await operation(f.agent, id);
+  const handle = assertAuthenticated((completed.data as any).result).session_handle;
+  requireWebsiteSession(f.store, handle, seconds());
+  await assert.rejects(vaultRequest(f.dir, 'credential.remove', { credential_id: f.imported.id }),
+    error => error instanceof AppError && error.code === 'invalid_kind');
+  const child = spawn(process.execPath, [cli, 'credential', 'revoke', String(f.imported.id), '--vault-dir', f.dir, '--data-dir', f.store.directory]);
+  let stdout = '';
+  child.stdout.on('data', chunk => { stdout += chunk; });
+  const [code] = await once(child, 'exit');
+  assert.equal(code, 0);
+  const revoked = JSON.parse(stdout).data;
+  assert.equal(revoked.revoked, true);
+  assert.equal(revoked.ciphertext_deleted, true);
+  assert.equal(revoked.revoked_sessions, 1);
+  assert.equal(revoked.invalidated_grants, 1);
+  const sessionRow = websiteSession(f.store, handle)!;
+  assert.ok(sessionRow.revoked_at);
+  assert.throws(() => requireWebsiteSession(f.store, handle, seconds()),
+    error => error instanceof AppError && error.code === 'invalid_session');
+  const listed = await vaultRequest(f.dir, 'credential.list', { wallet_id: 'wallet_demo' });
+  assert.equal(listed.credentials.length, 0);
+  const disk = await openVault(f.dir, await recovery(join(f.root, 'seed.json')));
+  try {
+    assert.equal(disk.data.credentials.length, 0);
+    assert.equal(disk.data.session_jars.length, 0);
+  } finally { disk.close(); }
+  const grantRow = f.store.db.prepare('SELECT version, revoked_at FROM grants WHERE grant_id=?').get(grant.grant_id)!;
+  assert.ok(grantRow.revoked_at);
+  assert.ok((grantRow.version as number) >= 2);
+  const audit = f.store.db.prepare("SELECT * FROM audit_log WHERE result='revoked'").get() as Record<string, unknown>;
+  assert.equal(audit.credential_id, f.imported.id);
+  assert.equal(audit.origin, '-');
+  assert.equal('password' in audit || 'secret' in audit, false);
+  await assert.rejects(runOrders(f.agent, WEBSITE_LOGIN_ACTION, {}), denied('grant_revoked'));
+  const cliAudit = spawnSync(process.execPath, [cli, 'audit', '--data-dir', f.store.directory], { encoding: 'utf8' });
+  assert.equal(cliAudit.status, 0);
+  const body = JSON.parse(cliAudit.stdout);
+  assert.equal(body.data.entries.length, 2);
+  assert.deepEqual(body.data.entries.map((row: { result: string }) => row.result).sort(), ['authenticated', 'revoked']);
+  assert.equal(JSON.stringify(body).includes(SECRET), false);
+});
+
 
