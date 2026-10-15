@@ -1,4 +1,6 @@
+import { isIPv4, isIPv6 } from 'node:net';
 import { AppError, textField } from './contracts.js';
+import { scrubValue } from './redact.js';
 import type { Connection } from './vault.js';
 
 export const WEBSITE_LOGIN_ACTION = 'website.session.login';
@@ -11,18 +13,26 @@ export interface WebsiteLoginOutcome {
 }
 export type WebsiteLoginExecutor = (input: WebsiteLoginInput) => Promise<WebsiteLoginOutcome>;
 
+function ipLiteralHost(host: string, raw: string): boolean {
+  if (raw.includes('[') || host.includes('[') || host.includes(':')) return true;
+  const inner = host.startsWith('[') && host.endsWith(']') ? host.slice(1, -1) : host;
+  return isIPv4(host) || isIPv6(host) || isIPv4(inner) || isIPv6(inner) ||
+    /^(?:\d{1,3}\.){3}\d{1,3}$/.test(host);
+}
+
 export function websiteOrigin(value: unknown): string {
   const raw = textField(value, 250);
   let url: URL;
   try { url = new URL(raw); } catch { throw new AppError('invalid_origin', 'Use a fixed HTTPS website origin.'); }
   const host = url.hostname.replace(/\.+$/u, '').toLowerCase();
+  const origin = `https://${host}`;
   if (url.protocol !== 'https:' || url.username || url.password || url.port || url.search || url.hash ||
       (url.pathname !== '/' && url.pathname !== '') || raw !== url.origin ||
-      host === 'localhost' || host.endsWith('.localhost') ||
-      !host.includes('.') || /^\d{1,3}(?:\.\d{1,3}){3}$/.test(host)) {
+      host === 'localhost' || host.endsWith('.localhost') || host.endsWith('.') || origin.endsWith('.') ||
+      !host.includes('.') || ipLiteralHost(host, raw) || ipLiteralHost(url.hostname, raw)) {
     throw new AppError('invalid_origin', 'Use a fixed HTTPS website origin.');
   }
-  return url.origin;
+  return origin;
 }
 
 export function websiteUsername(value: unknown): string {
@@ -93,5 +103,5 @@ export async function executeWebsiteLogin(
   if (containsSecret(snapshot, secret)) {
     throw new AppError('secret_leak_blocked', 'Login result attempted to expose vault material.');
   }
-  return { state: 'completed', result: sanitize(origin, snapshot) };
+  return { state: 'completed', result: scrubValue(sanitize(origin, snapshot), secret) as ReturnType<typeof sanitize> };
 }

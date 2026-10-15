@@ -76,6 +76,8 @@ type WebsiteLoginExecutor = (input: {
 
 The executor may use the password. It must not return it. `executeWebsiteLogin` rebuilds the agent-visible result from a whitelist (`source`, `origin`, `outcome`, optional `reason`). Extra fields, cookies, headers, HTML, and DOM dumps are dropped. If the rebuilt JSON still contains the password, execution fails closed.
 
+Vault replies go through `vaultReply()`. Errors at that boundary (and `publicError`) use a fixed `code → message` table; thrown `AppError` text is never returned. The Node persists `{ error: { code } }` only. A scrubber then replaces the active secret and its base64/URL-encoded forms in replies, before any logger write, matching the full secret rather than public substrings such as `test` inside an origin.
+
 A future real executor (out of scope) would:
 
 1. Open an isolated browser profile owned by the daemon, never by the agent.
@@ -145,7 +147,7 @@ New vault kinds, same storage format:
 | Object | Addition | Notes |
 | --- | --- | --- |
 | Credential | `kind: website_login` | `value` is the password string. List/import return id, wallet, name, kind only |
-| Connection | `provider: website` | `config = { origin, username, credential_id }`. Origin is a fixed HTTPS origin (no path, query, userinfo, port, or IP). List strips `config` |
+| Connection | `provider: website` | `config = { origin, username, credential_id }`. Origin is a fixed HTTPS origin (no path, query, userinfo, port, IP literal, IPv6/`[::1]`, or localhost). Trailing-dot hosts are stored without the trailing dot. List strips `config` |
 | Action | `website.session.login` | Empty params. Agent cannot pass a URL |
 | Grant | existing scoped grant | `max_calls = 1`, `max_amount_minor = 0`, resource `connection:<id>/website.session.login` |
 
@@ -161,8 +163,8 @@ Fail closed. Default deny.
 | **Replayed grant / operation** | Attacker replays HTTP, DPoP, or operation ID | Nonce/jti consumption, body hash, grant version, `max_calls=1`, same-ID replay of sanitized result only | A real site login already performed cannot be undone |
 | **Malicious page** | Login URL is attacker-controlled; credential posted off-origin | Agent cannot supply a URL. Origin is pinned at connection add. Default executor does not network | A future executor must pin navigation and reject redirects off origin |
 | **Exfiltration through page DOM** | Script on the login page reads the typed password or a new cookie | No real page in this slice. Future executor must not return DOM/HTML and must use an isolated profile | Any real browser fill can be observed by the page itself. That is inherent to password autofill |
-| **Log leakage** | Password appears in CLI JSON, Node logs, events, or thrown errors | Whitelisted result; `publicError` strips unknown errors; tests scan responses, DB rows, and stdout | Host telemetry, swap, and core dumps are out of process control |
-| **Confused deputy / SSRF** | Executor fetches attacker hosts with the password | HTTPS origin allowlist; no IPs, localhost, userinfo, or ports. Default executor refuses | Per-site adapters still needed before any HTTP client is attached |
+| **Log leakage** | Password appears in CLI JSON, Node logs, events, or thrown errors | Whitelisted result; `publicError` maps codes to a fixed message table; Node stores error codes only; secret scrubber; canary tests grep DB bytes, API responses, and logs | Host telemetry, swap, and core dumps are out of process control |
+| **Confused deputy / SSRF** | Executor fetches attacker hosts with the password | HTTPS origin allowlist; no IPs, IPv6 literals, localhost (including trailing-dot forms), userinfo, or ports. Default executor refuses | Per-site adapters still needed before any HTTP client is attached; DNS rebinding is a later runner check |
 | **Owner socket theft** | Malware on the same user talks to the vault socket | Existing Unix socket + bearer session file mode 0600 | Not a cross-user boundary |
 
 ## 6. What is feasible by 12 October 2026

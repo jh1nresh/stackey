@@ -3,7 +3,7 @@ import { chmodSync, existsSync, mkdtempSync, rmdirSync, unlinkSync } from 'node:
 import { createServer, type Server } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
-import { AppError, digest, displayName, publicError, record, textField } from './contracts.js';
+import { AppError, digest, displayName, publicError, record, textField, vaultReply } from './contracts.js';
 import { loadIdentity, readPrivateJson, writePrivateJson } from './identity.js';
 import { initializeDemo } from './orders.js';
 import { approvePairing, initializeOwner, requireGrant, revokeGrant, seconds, verifyGrant } from './policy.js';
@@ -140,10 +140,16 @@ export async function unlockVault(dir:string,recoveryFile:string,nodeDir:string,
         connectionConfig(connection.provider,connection.config,vault.data,grant.wallet_id);
         const credential=vault.data.credentials.find(c=>c.id===connection.config.credential_id&&c.wallet_id===grant.wallet_id)!;
         const params=providerParams(grant.action,args.params);
-        if(grant.action==='stripe.mpp.pay')return await payMpp(connection,credential.value,textField(args.operation_id,36),grant.max_amount_minor,check,args.previous as PaymentContinuation|undefined);
-        if(grant.action===WEBSITE_LOGIN_ACTION)return await executeWebsiteLogin(connection,credential.value,params,check,websiteLogin);
-        check();const result=await executeProvider(connection,grant.action,params,credential.value);check();
-        return {state:'completed',result};
+        const secret=credential.value;
+        try {
+          const outcome=grant.action==='stripe.mpp.pay'?await payMpp(connection,secret,textField(args.operation_id,36),grant.max_amount_minor,check,args.previous as PaymentContinuation|undefined)
+            :grant.action===WEBSITE_LOGIN_ACTION?await executeWebsiteLogin(connection,secret,params,check,websiteLogin)
+            :await (async()=>{check();const result=await executeProvider(connection,grant.action,params,secret);check();return {state:'completed' as const,result};})();
+          return vaultReply(outcome, secret) as typeof outcome;
+        } catch (error) {
+          const safe=publicError(error, secret);
+          throw new AppError(safe.body.error.code, safe.body.error.message, safe.httpStatus, safe.exitCode, safe.body.status);
+        }
       } finally {store.close();}
     }
     if(command==='node.bind') {
@@ -189,7 +195,7 @@ export async function unlockVault(dir:string,recoveryFile:string,nodeDir:string,
           const auth=request.headers.authorization;
           if(request.method!=='POST'||request.url!=='/owner'||request.headers['content-type']!=='application/json'||typeof auth!=='string'||Buffer.byteLength(auth)!==Buffer.byteLength('Bearer '+token)||!timingSafeEqual(Buffer.from(auth),Buffer.from('Bearer '+token)))throw new AppError('permission_denied','Private owner session required.',403,3,'permission_denied');
           const input=record(JSON.parse(raw));if(Object.keys(input).sort().join(',')!=='args,command')throw new AppError('invalid_request','Use command and args.');
-          const data=await execute(textField(input.command,64),record(input.args));response.end(JSON.stringify({status:'ok',data}));
+          const data=await execute(textField(input.command,64),record(input.args));response.end(JSON.stringify({status:'ok',data:vaultReply(data)}));
         }catch(error){const safe=publicError(error);response.writeHead(safe.httpStatus);response.end(JSON.stringify({...safe.body,exit_code:safe.exitCode}));}
       };
       let provider=false;try{provider=record(JSON.parse(raw)).command==='provider.execute';}catch{}

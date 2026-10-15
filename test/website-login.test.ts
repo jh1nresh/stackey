@@ -1,12 +1,13 @@
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, readFileSync, readdirSync, rmSync, statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { test, type TestContext } from 'node:test';
 import { capabilities, operation, runOrders } from '../src/agent-client.js';
 import { connect } from '../src/client.js';
 import { AppError } from '../src/contracts.js';
+import { secretForms } from '../src/redact.js';
 import { loadIdentity } from '../src/identity.js';
 import { startNode } from '../src/node.js';
 import { issueInvitation } from '../src/pairing.js';
@@ -33,6 +34,41 @@ const ORIGIN = 'https://dashboard.example.test';
 const denied = (code?: string) => (error: unknown) => error instanceof AppError && error.exitCode === 3 && (!code || error.code === code);
 const leak = (value: unknown) => JSON.stringify(value).includes(SECRET);
 
+function captureProcessIo() {
+  const chunks: string[] = [];
+  const hook = (stream: NodeJS.WriteStream) => {
+    const original = stream.write.bind(stream);
+    (stream as { write: (chunk: unknown, ...rest: unknown[]) => boolean }).write = (chunk, ...rest) => {
+      chunks.push(Buffer.isBuffer(chunk) ? chunk.toString('utf8') : String(chunk));
+      return original(chunk as string | Uint8Array, ...rest as []);
+    };
+    return () => { stream.write = original; };
+  };
+  const restore = [hook(process.stdout), hook(process.stderr)];
+  return { text: () => chunks.join(''), restore: () => { for (const undo of restore) undo(); } };
+}
+
+function walkFiles(root: string): string[] {
+  const out: string[] = [];
+  for (const name of readdirSync(root)) {
+    const path = join(root, name);
+    const stat = statSync(path);
+    if (stat.isDirectory()) out.push(...walkFiles(path));
+    else if (stat.isFile()) out.push(path);
+  }
+  return out;
+}
+
+function assertSecretAbsent(secret: string, ...parts: unknown[]) {
+  const needles = secretForms(secret);
+  for (const part of parts) {
+    const text = Buffer.isBuffer(part) ? part.toString('latin1') : typeof part === 'string' ? part : JSON.stringify(part);
+    for (const needle of needles) {
+      assert.equal(text.includes(needle), false);
+    }
+  }
+}
+
 function mockLogin(calls: number[], human?: 'email_otp' | 'passkey' | 'captcha' | 'device_confirmation', received: { password: boolean } = { password: false }): WebsiteLoginExecutor {
   return async (input: WebsiteLoginInput) => {
     calls.push(1);
@@ -44,12 +80,16 @@ function mockLogin(calls: number[], human?: 'email_otp' | 'passkey' | 'captcha' 
 
 test('website origin and username fail closed on open redirects, local targets and control characters', () => {
   assert.equal(websiteOrigin(ORIGIN), ORIGIN);
+  assert.equal(websiteOrigin('https://dashboard.example.test.'), ORIGIN);
+  assert.equal(websiteOrigin('https://dashboard.example.test.').endsWith('.'), false);
   assert.equal(websiteUsername(USER), USER);
   for (const origin of ['http://dashboard.example.test', 'https://127.0.0.1', 'https://localhost',
-    'https://localhost.', 'https://foo.localhost.',
+    'https://localhost.', 'https://foo.localhost.', 'https://[::1]', 'https://[::ffff:127.0.0.1]',
+    'https://[0:0:0:0:0:0:0:1]', 'https://127.1', 'https://127.0.1', 'https://0x7f000001',
+    'https://2130706433', 'https://Dashboard.Example.TEST', 'https://bücher.example',
     'https://evil.test/login', 'https://user:pass@evil.test', 'https://dashboard.example.test:444',
     'https://192.168.0.1', 'https://dashboard.example.test/?next=https://evil.test']) {
-    assert.throws(() => websiteOrigin(origin));
+    assert.throws(() => websiteOrigin(origin), error => error instanceof AppError && error.code === 'invalid_origin');
   }
   assert.throws(() => websiteUsername(' owner@example.test'));
   assert.throws(() => websiteUsername('owner\nadmin'));
@@ -135,7 +175,7 @@ test('executor AppError that includes the password is replaced with executor_fai
     error => error instanceof AppError && error.code === 'executor_failed' && !leak(error) && !String(error.message).includes(SECRET));
 });
 
-async function runtime(t: TestContext, executor: WebsiteLoginExecutor = refuseWebsiteLogin) {
+async function runtime(t: TestContext, executor: WebsiteLoginExecutor = refuseWebsiteLogin, password = SECRET) {
   const root = mkdtempSync(join(tmpdir(), 'stackey-website-'));
   const dir = join(root, 'vault'); const nodeDir = join(root, 'node'); const recovery = join(root, 'seed.json');
   await initializeVault(dir, recovery);
@@ -146,13 +186,13 @@ async function runtime(t: TestContext, executor: WebsiteLoginExecutor = refuseWe
   t.after(async () => { await node.close(); await vault.close(); store.close(); rmSync(root, { recursive: true }); });
   const owner = { _node_dir: resolve(nodeDir) };
   await vaultRequest(dir, 'node.bind', owner);
-  const imported = await vaultRequest(dir, 'credential.import', { wallet_id: 'wallet_demo', name: 'Dashboard', kind: 'website_login', value: SECRET });
+  const imported = await vaultRequest(dir, 'credential.import', { wallet_id: 'wallet_demo', name: 'Dashboard', kind: 'website_login', value: password });
   const connected = await vaultRequest(dir, 'connection.add', { wallet_id: 'wallet_demo', name: 'Example', provider: 'website',
     config: { origin: ORIGIN, username: USER, credential_id: imported.id } });
   const agent = join(root, 'agent');
   const invitation = await issueInvitation(store, identity, 300);
   const pairing = (await connect(invitation, agent, 'Website Agent')).data as any;
-  return { dir, node, store, agent, owner, imported, connected, pairing, identity };
+  return { root, dir, node, store, agent, owner, imported, connected, pairing, identity };
 }
 
 function traces(store: Store, extra: unknown[] = []) {
@@ -244,7 +284,7 @@ test('human_required outcomes stay sanitized and a leaking executor error never 
   await drainProviderOperations(fail.node.nodeId);
   const unknown = await operation(fail.agent, failId);
   assert.equal(unknown.status, 'result_unknown');
-  assert.equal((unknown.data as any).result.error.code, 'executor_failed');
+  assert.deepEqual((unknown.data as any).result.error, { code: 'executor_failed' });
   assert.equal(leak(unknown), false);
   assert.equal(leak(traces(fail.store, [unknown])), false);
 
@@ -258,8 +298,7 @@ test('human_required outcomes stay sanitized and a leaking executor error never 
   await drainProviderOperations(leaky.node.nodeId);
   const sanitized = await operation(leaky.agent, leakId);
   assert.equal(sanitized.status, 'result_unknown');
-  assert.equal((sanitized.data as any).result.error.code, 'executor_failed');
-  assert.ok(!(sanitized.data as any).result.error.message.includes(SECRET));
+  assert.deepEqual((sanitized.data as any).result.error, { code: 'executor_failed' });
   assert.equal(leak(sanitized), false);
   assert.equal(leak(traces(leaky.store, [sanitized])), false);
 });
@@ -297,8 +336,7 @@ test('result getters cannot leak the password into results or audit rows and sti
   await drainProviderOperations(boom.node.nodeId);
   const failed = await operation(boom.agent, boomId);
   assert.equal(failed.status, 'result_unknown');
-  assert.equal((failed.data as any).result.error.code, 'executor_failed');
-  assert.ok(!(failed.data as any).result.error.message.includes(SECRET));
+  assert.deepEqual((failed.data as any).result.error, { code: 'executor_failed' });
   assert.equal(leak(failed), false);
   assert.equal(leak(traces(boom.store, [failed])), false);
   await assert.rejects(runOrders(boom.agent, WEBSITE_LOGIN_ACTION, {}), denied('budget_exceeded'));
@@ -317,8 +355,7 @@ test('injected executor_unavailable AppError is sanitized and still consumes the
   await drainProviderOperations(f.node.nodeId);
   const result = await operation(f.agent, id);
   assert.equal(result.status, 'result_unknown');
-  assert.equal((result.data as any).result.error.code, 'executor_failed');
-  assert.ok(!(result.data as any).result.error.message.includes(SECRET));
+  assert.deepEqual((result.data as any).result.error, { code: 'executor_failed' });
   assert.equal(leak(result), false);
   assert.equal(leak(traces(f.store, [result])), false);
   await assert.rejects(runOrders(f.agent, WEBSITE_LOGIN_ACTION, {}), denied('budget_exceeded'));
@@ -339,3 +376,39 @@ test('production default executor refuses with permission_denied and does not co
   await assert.rejects(operation(f.agent, again), denied('executor_unavailable'));
   assert.equal(leak(traces(f.store)), false);
 });
+
+async function approvedLogin(t: TestContext, executor: WebsiteLoginExecutor, password: string) {
+  const f = await runtime(t, executor, password);
+  await vaultRequest(f.dir, 'grant.approve', { ...f.owner, pairing_id: f.pairing.pairing_id,
+    principal: f.pairing.principal, action: WEBSITE_LOGIN_ACTION, ttl: 300, wallet_id: 'wallet_demo',
+    connection_id: f.connected.id, max_calls: 1, max_amount_minor: 0 });
+  const id = randomUUID();
+  const logs = captureProcessIo();
+  try {
+    await runOrders(f.agent, WEBSITE_LOGIN_ACTION, {}, id);
+    await drainProviderOperations(f.node.nodeId);
+    const result = await operation(f.agent, id);
+    const row = f.store.db.prepare('SELECT result_json FROM provider_operations WHERE operation_id=?').get(id);
+    const files = walkFiles(f.root).map(path => readFileSync(path));
+    assertSecretAbsent(password, result, traces(f.store, [result]), logs.text(), row, ...files);
+    return { f, id, result, row };
+  } finally { logs.restore(); }
+}
+
+test('canary password from a throwing executor appears in zero DB rows, API responses, and logs', async t => {
+  const canary = `CANARY-pw-${randomUUID()}`;
+  const noisy: WebsiteLoginExecutor = async () => { throw new AppError('login_failed', `could not type ${canary}`, 400, 2, 'failed'); };
+  const ran = await approvedLogin(t, noisy, canary);
+  assert.equal(ran.result.status, 'result_unknown');
+  assert.deepEqual((ran.result.data as any).result.error, { code: 'executor_failed' });
+  assert.equal(JSON.parse(String(ran.row!.result_json)).error.message, undefined);
+});
+
+test('canary password echoed by a mock site never reaches the agent, DB, or logs', async t => {
+  const canary = `CANARY-pw-${randomUUID()}`;
+  const echo: WebsiteLoginExecutor = async () => ({ state: 'completed', html: `<p>invalid password ${canary}</p>`, error: canary } as any);
+  const ran = await approvedLogin(t, echo, canary);
+  assert.equal(ran.result.status, 'ok');
+  assert.deepEqual((ran.result.data as any).result, { source: 'website_login', origin: ORIGIN, outcome: 'authenticated' });
+});
+
