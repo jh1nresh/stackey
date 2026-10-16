@@ -112,7 +112,14 @@ test('approved single-use credential.get returns the secret once, persists issue
     connection_id: f.connected.id, max_calls: 5, max_amount_minor: 0 }), error => error instanceof AppError && error.code === 'invalid_limit');
   await assert.rejects(vaultRequest(f.dir, 'grant.approve', { ...f.owner, pairing_id: f.pairing.pairing_id,
     principal: f.pairing.principal, action: CREDENTIAL_GET_ACTION, ttl: 900, wallet_id: 'wallet_demo',
-    connection_id: f.connected.id, max_calls: 1, max_amount_minor: 0 }), error => error instanceof AppError && error.code === 'invalid_ttl');
+    connection_id: f.connected.id, max_calls: 1, max_amount_minor: 0 }),
+    error => error instanceof AppError && error.code === 'invalid_ttl'
+      && error.message === 'Grant lifetime must be 60–300 seconds.');
+  await assert.rejects(vaultRequest(f.dir, 'grant.approve', { ...f.owner, pairing_id: f.pairing.pairing_id,
+    principal: f.pairing.principal, action: CREDENTIAL_GET_ACTION, ttl: 59, wallet_id: 'wallet_demo',
+    connection_id: f.connected.id, max_calls: 1, max_amount_minor: 0 }),
+    error => error instanceof AppError && error.code === 'invalid_ttl'
+      && error.message === 'Grant lifetime must be 60–300 seconds.');
 
   const grant = await approve(f);
   assert.equal(grant.max_calls, 1);

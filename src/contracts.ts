@@ -192,16 +192,19 @@ export function publicErrorMessage(code: string): string {
   return isPublicErrorCode(code) ? PUBLIC_ERROR_MESSAGES[code]! : INTERNAL_ERROR_MESSAGE;
 }
 
+const TTL_RANGE_MESSAGE = /^(?:Grant|Vault unlock|Invitation) lifetime must be \d+–\d+ seconds\.$/;
+
 export function publicError(error: unknown, secret?: string) {
   const raw = error instanceof AppError ? error :
     new AppError('internal_error', INTERNAL_ERROR_MESSAGE, 500, 1, 'failed');
   const known = isPublicErrorCode(raw.code);
   const code = known ? raw.code : 'internal_error';
+  const message = code === 'invalid_ttl' && TTL_RANGE_MESSAGE.test(raw.message) ? raw.message : publicErrorMessage(code);
   const body = vaultReply({
     schema_version: 1,
     request_id: randomUUID(),
     status: known ? raw.status : 'failed',
-    error: { code, message: publicErrorMessage(code) },
+    error: { code, message },
   }, secret);
   return {
     exitCode: known ? raw.exitCode : 1,

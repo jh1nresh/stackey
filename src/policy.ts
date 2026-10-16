@@ -48,8 +48,11 @@ export async function approvePairing(store: Store, node: Identity, owner: Identi
   const maxCalls = singleUse ? integer(scope!.max_calls, 1, 1) : scope ? integer(scope.max_calls, 1, 100) : 1000;
   const maxAmount = singleUse ? integer(scope!.max_amount_minor, 0, 0) : scope ? integer(scope.max_amount_minor, 0, 10000) : 0;
   if (action === 'stripe.mpp.pay' && maxAmount < 50) throw new AppError('invalid_budget', 'MPP requires a positive USD minor-unit budget.');
+  const minTtl = credentialGet ? CREDENTIAL_GET_TTL_MIN : 60;
   const maxTtl = credentialGet ? CREDENTIAL_GET_TTL_MAX : 900;
-  if (!Number.isInteger(ttl) || ttl < CREDENTIAL_GET_TTL_MIN || ttl > maxTtl) throw new AppError('invalid_ttl', 'Grant lifetime must be 60–900 seconds.');
+  if (!Number.isInteger(ttl) || ttl < minTtl || ttl > maxTtl) {
+    throw new AppError('invalid_ttl', `Grant lifetime must be ${minTtl}–${maxTtl} seconds.`);
+  }
   if (!/^(wallet_demo|wallet_[0-9a-f-]{36})$/.test(walletId)) throw new AppError('invalid_wallet', 'Invalid wallet ID.');
   if (action === ACTION) requireDemo(store);
   const pinned = await ownerKey(store);
