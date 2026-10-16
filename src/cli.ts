@@ -18,6 +18,7 @@ import { approvePairing, initializeOwner, revokeGrant, seconds } from './policy.
 
 import { backupStatusFields, defaultRecoveryPath, withBackupStatus } from './backup-state.js';
 import { runPhraseBackup } from './backup-phrase.js';
+import { backupToIcloud, findIcloudBackup, readBackupPassword, restoreFromIcloud } from './icloud-backup.js';
 import { backupVault, initializeVault, recovery, restoreVault } from './vault.js';
 import { unlockVault } from './vault-session.js';
 import { sessionPath, vaultRequest } from './vault-client.js';
@@ -27,6 +28,8 @@ const help = `Stackey — local agent authorization demo
 
   stackey setup [--vault-dir .stackey/vault] [--recovery-out .stackey/recovery.json]
   stackey backup [--vault-dir .stackey/vault] [--recovery-file <private-file>]
+  stackey backup --icloud --password-file <private-JSON-file> [--vault-dir .stackey/vault]
+  stackey restore --password-file <private-JSON-file> [--backup-file <icloud-file>] [--vault-dir <new-dir>]
   stackey vault init --recovery-out <new-private-file> [--vault-dir .stackey/vault]
   stackey vault unlock [--recovery-file <private-file>] [--vault-dir ...] [--data-dir ...] [--ttl 900]
       # macOS: Touch ID / Keychain unlock by default; --recovery-file is fallback
@@ -95,6 +98,8 @@ async function main() {
       connection: { type: 'string' }, 'max-calls': { type: 'string' }, 'max-amount-minor': { type: 'string' }, prompt: { type: 'string' },
       kind: { type: 'string' }, provider: { type: 'string' }, 'config-file': { type: 'string' },
       origin: { type: 'string' },
+      icloud: { type: 'boolean' },
+      'password-file': { type: 'string' },
       'request-id': { type: 'string' },
       port: { type: 'string' }, ttl: { type: 'string' }, name: { type: 'string' },
       after: { type: 'string' },
@@ -114,9 +119,20 @@ async function main() {
     output(envelope(String(result.status), result)); return;
   }
   if (command === 'backup' && positionals.length === 1) {
+    if (values.icloud) {
+      if (!values['password-file']) throw new AppError('backup_password_required', 'Provide a backup password via --password-file (private JSON).');
+      output(envelope('ok', vaultReply(await backupToIcloud(vaultDir, readBackupPassword(resolve(values['password-file']))))));
+      return;
+    }
     const recoveryFile = values['recovery-file'] === undefined ? undefined : resolve(textField(values['recovery-file']));
     const result = await runPhraseBackup(vaultDir, { input: process.stdin, human: process.stderr }, recoveryFile);
     output(envelope('ok', vaultReply(result)));
+    return;
+  }
+  if (command === 'restore' && positionals.length === 1) {
+    if (!values['password-file']) throw new AppError('backup_password_required', 'Provide a backup password via --password-file (private JSON).');
+    const backupFile = values['backup-file'] === undefined ? findIcloudBackup() : resolve(textField(values['backup-file']));
+    output(envelope('ok', vaultReply(await restoreFromIcloud(vaultDir, readBackupPassword(resolve(values['password-file'])), backupFile))));
     return;
   }
   if (command === 'setup' && positionals.length === 1) {

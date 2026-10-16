@@ -26,6 +26,16 @@ node dist/src/cli.js backup --vault-dir .stackey/vault
 
 確認 3 個隨機位置的單字後，會清除 nudge，並詢問是否安全覆寫後刪除明文 recovery 檔。stdout 仍是 JSON，不含助記詞。加密 vault 檔複製仍用 `vault backup`。
 
+加密 iCloud Drive 備份（使用者備份密碼 + scrypt + AES-256-GCM；無伺服器）。macOS 寫入 `~/Library/Mobile Documents/com~apple~CloudDocs/Stackey/`；測試可用 `STACKEY_ICLOUD_DIR`。密碼只從 0600 `--password-file` `{"password":"..."}` 讀取，不進 CLI 參數：
+
+```bash
+node dist/src/cli.js backup --icloud --password-file .stackey/backup-password.json
+node dist/src/cli.js restore --password-file .stackey/backup-password.json \
+  --vault-dir .stackey/restored-vault
+```
+
+iCloud 檔不含明文助記詞。錯誤密碼對應 `invalid_backup_password`，不寫入目標 vault。這不會自動清除紙本 `not backed up` nudge。
+
 另一個終端機解鎖，保持前景程序執行。macOS 預設走 Keychain／Touch ID，不必再讀明文 recovery 檔：
 
 ```bash

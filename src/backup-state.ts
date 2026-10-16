@@ -14,6 +14,7 @@ export interface BackupState {
   backed_up: boolean;
   plaintext_recovery: boolean;
   keychain_unlock: boolean;
+  icloud_backup: boolean;
 }
 
 export interface BackupStatusFields {
@@ -21,6 +22,7 @@ export interface BackupStatusFields {
   backed_up: boolean;
   plaintext_recovery: boolean;
   keychain_unlock: boolean;
+  icloud_backup: boolean;
   backup_nudge?: string;
 }
 
@@ -46,6 +48,7 @@ export function createBackupState(dir: string, vaultId: string, recoveryFile: st
     backed_up: false,
     plaintext_recovery: true,
     keychain_unlock: false,
+    icloud_backup: false,
   };
   writeBackupState(dir, state);
   return state;
@@ -68,6 +71,10 @@ export function readBackupState(dir: string): BackupState | undefined {
   if (raw.keychain_unlock !== undefined && typeof raw.keychain_unlock !== 'boolean') {
     throw new AppError('invalid_state', 'Backup state file is invalid.');
   }
+  const icloud_backup = raw.icloud_backup === undefined ? false : raw.icloud_backup === true;
+  if (raw.icloud_backup !== undefined && typeof raw.icloud_backup !== 'boolean') {
+    throw new AppError('invalid_state', 'Backup state file is invalid.');
+  }
   return {
     format: BACKUP_STATE_FORMAT,
     version: 1,
@@ -76,10 +83,11 @@ export function readBackupState(dir: string): BackupState | undefined {
     backed_up: raw.backed_up,
     plaintext_recovery: raw.plaintext_recovery,
     keychain_unlock,
+    icloud_backup,
   };
 }
 
-export function updateBackupState(dir: string, patch: Partial<Pick<BackupState, 'backed_up' | 'plaintext_recovery' | 'keychain_unlock' | 'recovery_file'>>): BackupState {
+export function updateBackupState(dir: string, patch: Partial<Pick<BackupState, 'backed_up' | 'plaintext_recovery' | 'keychain_unlock' | 'icloud_backup' | 'recovery_file'>>): BackupState {
   const current = readBackupState(dir);
   if (!current) throw new AppError('invalid_state', 'Backup state file is invalid.');
   const next: BackupState = { ...current, ...patch };
@@ -106,6 +114,7 @@ export function backupStatusFields(dir: string): BackupStatusFields | Record<str
       backed_up: true,
       plaintext_recovery: state.plaintext_recovery,
       keychain_unlock: state.keychain_unlock,
+      icloud_backup: state.icloud_backup,
     };
   }
   return {
@@ -113,6 +122,7 @@ export function backupStatusFields(dir: string): BackupStatusFields | Record<str
     backed_up: false,
     plaintext_recovery: state?.plaintext_recovery ?? true,
     keychain_unlock: state?.keychain_unlock ?? false,
+    icloud_backup: state?.icloud_backup ?? false,
     backup_nudge: NOT_BACKED_UP_NUDGE,
   };
 }
