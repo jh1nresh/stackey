@@ -18,6 +18,7 @@ import {
   addCredentialOrigin, createWebsiteSession, originAllowed, revokeWebsiteSessions, websiteSessionTtl, writeAudit,
   type AuditResult,
 } from './website-sessions.js';
+import { CREDENTIAL_GET_ACTION, credentialGetOrigin, credentialHandoff } from './credential-get.js';
 import { executeWebsiteLogin, refuseWebsiteLogin, WEBSITE_LOGIN_ACTION, websiteOrigin, type WebsiteLoginExecutor } from './website-login.js';
 
 export interface RunningVault { server:Server;vaultId:string;owner:string;expiresAt:number;close():Promise<void> }
@@ -144,7 +145,7 @@ export async function unlockVault(dir:string,recoveryFile:string|undefined,nodeD
       exact(['credential_id','origin']);
       const id=textField(args.credential_id,64);
       const credential=vault.data.credentials.find(c=>c.id===id);
-      if(!credential||credential.kind!=='website_login')throw new AppError('credential_not_found','Select a website login credential.');
+      if(!credential)throw new AppError('credential_not_found','Select a credential.');
       const origin=websiteOrigin(args.origin);
       const store=new Store(configuredNodeDir);
       try { addCredentialOrigin(store,id,origin); return { credential_id:id, origin, allowlisted:true }; }
@@ -183,12 +184,12 @@ export async function unlockVault(dir:string,recoveryFile:string|undefined,nodeD
     if(command==='connection.add') {
       exact(['wallet_id','name','provider','config'],['request_id']);const replay=replayed(command,args);if(replay)return replay;
       const w=wallet(args.wallet_id);
-      if(!['demo','supabase','vercel','stripe','website'].includes(String(args.provider)))throw new AppError('invalid_provider','Use a supported provider.');
+      if(!['demo','supabase','vercel','stripe','website','credential'].includes(String(args.provider)))throw new AppError('invalid_provider','Use a supported provider.');
       const value:Connection={id:'connection_'+randomUUID(),wallet_id:w.id,name:displayName(args.name),provider:args.provider as Connection['provider'],config:connectionConfig(args.provider as Connection['provider'],args.config,vault.data,w.id)};
       const metadata={id:value.id,wallet_id:value.wallet_id,name:value.name,provider:value.provider};
       vault.data.connections.push(value);w.connections.push(value.id);const evicted=remember(command,args,metadata);
       try{
-        if(value.provider==='website'){
+        if(value.provider==='website'||value.provider==='credential'){
           const origins=new Store(configuredNodeDir);
           try { addCredentialOrigin(origins,String(value.config.credential_id),websiteOrigin(value.config.origin)); }
           finally { origins.close(); }
@@ -218,13 +219,32 @@ export async function unlockVault(dir:string,recoveryFile:string|undefined,nodeD
         const connection=vault.data.connections.find(c=>c.id===grant.connection_id&&c.wallet_id===grant.wallet_id&&supports(c,grant.action));
         if(!connection)throw new AppError('connection_unavailable','Granted connection is unavailable.');
         const credential=vault.data.credentials.find(c=>c.id===connection.config.credential_id&&c.wallet_id===grant.wallet_id);
-        if(grant.action===WEBSITE_LOGIN_ACTION && (!credential||!credential.value))
-          throw new AppError('credential_revoked','This website login credential has been revoked.',403,3,'permission_denied');
+        if((grant.action===WEBSITE_LOGIN_ACTION||grant.action===CREDENTIAL_GET_ACTION) && (!credential||!credential.value))
+          throw new AppError(grant.action===WEBSITE_LOGIN_ACTION?'credential_revoked':'credential_not_found',
+            grant.action===WEBSITE_LOGIN_ACTION?'This website login credential has been revoked.':'Select a credential in this wallet.',403,3,'permission_denied');
         connectionConfig(connection.provider,connection.config,vault.data,grant.wallet_id);
         if(!credential||!credential.value)throw new AppError('credential_not_found','Select a credential in this wallet.');
         const params=providerParams(grant.action,args.params);
         const secret=credential.value;
         try {
+          if(grant.action===CREDENTIAL_GET_ACTION) {
+            const origin=credentialGetOrigin(connection);
+            const credentialId=String(connection.config.credential_id);
+            const started=clock();
+            const audit=(result:AuditResult)=>{ writeAudit(store,{credential_id:credentialId,agent_id:grant.principal,origin,started_at:started,result}); };
+            try {
+              if(!originAllowed(store,credentialId,origin))throw new AppError('origin_not_allowed','Website origin is not on this credential allowlist.',403,3,'permission_denied');
+              check();
+              const outcome=credentialHandoff(secret);
+              audit('issued');
+              return outcome;
+            } catch (error) {
+              const safe=publicError(error, secret);
+              const refused=['origin_not_allowed','credential_revoked','credential_not_found'].includes(safe.body.error.code);
+              audit(refused?'refused':'failed');
+              throw new AppError(safe.body.error.code, safe.body.error.message, refused?403:safe.httpStatus, refused?3:safe.exitCode, refused?'permission_denied':safe.body.status);
+            }
+          }
           if(grant.action===WEBSITE_LOGIN_ACTION) {
             const origin=websiteOrigin(connection.config.origin);
             const credentialId=String(connection.config.credential_id);
@@ -286,8 +306,8 @@ export async function unlockVault(dir:string,recoveryFile:string|undefined,nodeD
           const connection=vault.data.connections.find(c=>c.id===args.connection_id&&c.wallet_id===w.id&&supports(c,String(args.action)));
           if(!connection)throw new AppError('connection_unavailable','Select a matching connection in this wallet.');
           connectionConfig(connection.provider,connection.config,vault.data,w.id);
-          const websiteLoginGrant=args.action===WEBSITE_LOGIN_ACTION;
-          return await approvePairing(store,node,vault.owner,textField(args.pairing_id,36),textField(args.principal,64),textField(args.action,64),Number(args.ttl),clock,w.id,{connection_id:connection.id,max_calls:integer(args.max_calls??1,1,websiteLoginGrant?1:100),max_amount_minor:integer(args.max_amount_minor??0,0,websiteLoginGrant?0:10000)},guard);
+          const singleUseGrant=args.action===WEBSITE_LOGIN_ACTION||args.action===CREDENTIAL_GET_ACTION;
+          return await approvePairing(store,node,vault.owner,textField(args.pairing_id,36),textField(args.principal,64),textField(args.action,64),Number(args.ttl),clock,w.id,{connection_id:connection.id,max_calls:integer(args.max_calls??1,1,singleUseGrant?1:100),max_amount_minor:integer(args.max_amount_minor??0,0,singleUseGrant?0:10000)},guard);
         }
         if(!vault.data.connections.some(c=>c.wallet_id===w.id&&c.provider==='demo'))throw new AppError('connection_unavailable','Connect a demo resource to this wallet first.');
         return await approvePairing(store,node,vault.owner,textField(args.pairing_id,36),textField(args.principal,64),textField(args.action,64),Number(args.ttl),clock,w.id,undefined,guard);

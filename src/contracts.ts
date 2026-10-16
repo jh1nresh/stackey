@@ -12,6 +12,7 @@ export const PUBLIC_ERROR_MESSAGES: Record<string, string> = Object.freeze({
   action_not_available: 'Unsupported action.',
   agent_not_paired: 'Connect this agent state directory first.',
   already_approved: 'This pairing already has a grant; create a new pairing for a new task.',
+  already_issued: 'This credential was already issued for this operation.',
   already_initialized: 'Node identity already exists.',
   backup_confirm_failed: 'Recovery confirmation did not match. The not-backed-up nudge was not cleared.',
   backup_password_required: 'Provide a backup password via --password-file (private JSON).',
