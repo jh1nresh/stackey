@@ -1,5 +1,5 @@
 const REDACTED = '[redacted]';
-const PUBLIC_FIELDS = new Set(['source', 'origin', 'outcome', 'reason', 'state', 'code']);
+const PUBLIC_FIELDS = new Set(['source', 'origin', 'outcome', 'reason', 'state', 'code', 'session_handle', 'expires_at']);
 
 export function secretForms(secret: string): string[] {
   if (!secret) return [];

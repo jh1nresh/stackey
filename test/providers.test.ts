@@ -23,7 +23,7 @@ import { vaultRequest } from '../src/vault-client.js';
 import { unlockVault } from '../src/vault-session.js';
 
 const wallet='wallet_demo'; const credential='credential_'+randomUUID();
-const data:VaultData={wallets:[{id:wallet,name:'Test',connections:[]}],credentials:[{id:credential,wallet_id:wallet,name:'Test API',kind:'api_key',value:'sk_test_fixture'}],connections:[],requests:[]};
+const data:VaultData={wallets:[{id:wallet,name:'Test',connections:[]}],credentials:[{id:credential,wallet_id:wallet,name:'Test API',kind:'api_key',value:'sk_test_fixture'}],connections:[],requests:[],session_jars:[]};
 const schemaLink=(handler:LinkCall):LinkCall=>async(token,args)=>{assertLinkSpendRequestArgs(args);return handler(token,args);};
 const connection=(provider:Connection['provider'],config:Record<string,unknown>):Connection=>({id:'connection_'+randomUUID(),wallet_id:wallet,provider,name:'Fixture',config});
 const supabase=connection('supabase',{project_ref:'abcdefghijklmnopqrst',credential_id:credential});
@@ -42,6 +42,8 @@ test('website connections pin an HTTPS origin and require a website_login creden
   const websiteData={...data,credentials:[...data.credentials,{id:login,wallet_id:wallet,name:'Site',kind:'website_login' as const,value:'x'}]};
   assert.deepEqual(connectionConfig('website',{origin:'https://dashboard.example.test',username:'owner@example.test',credential_id:login},websiteData,wallet),
     {origin:'https://dashboard.example.test',username:'owner@example.test',credential_id:login});
+  assert.deepEqual(connectionConfig('website',{origin:'https://dashboard.example.test',username:'owner@example.test',credential_id:login,session_ttl:120},websiteData,wallet),
+    {origin:'https://dashboard.example.test',username:'owner@example.test',credential_id:login,session_ttl:120});
   assert.throws(()=>connectionConfig('website',{origin:'https://dashboard.example.test',username:'owner@example.test',credential_id:credential},data,wallet));
   for(const origin of ['http://dashboard.example.test','https://127.0.0.1','https://localhost','https://localhost.','https://foo.localhost.','https://evil.test/login','https://user:pass@evil.test','https://dashboard.example.test:444']){
     assert.throws(()=>connectionConfig('website',{origin,username:'owner@example.test',credential_id:login},websiteData,wallet));

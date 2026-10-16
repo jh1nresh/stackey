@@ -73,7 +73,8 @@ export async function dispatchProviderOperation(store: Store, node: Identity, re
         });
       } catch (error) {
         const code = publicError(error).body.error.code;
-        const refused = grant.action === 'website.session.login' && code === 'executor_unavailable';
+        const refused = grant.action === 'website.session.login' &&
+          ['executor_unavailable', 'origin_not_allowed', 'credential_revoked'].includes(code);
         store.transaction(() => {
           store.db.prepare('UPDATE provider_operations SET state=?,result_json=? WHERE operation_id=?')
             .run(refused ? 'failed' : 'result_unknown', JSON.stringify({ error: { code } }), operationId);

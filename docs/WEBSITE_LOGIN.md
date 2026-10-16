@@ -93,13 +93,14 @@ It would **not** give the agent a cookie jar, CDP port, or screenshot of a fille
 | Material | Who may hold it | Lifetime | Blast radius if stolen |
 | --- | --- | --- | --- |
 | Vault `website_login` password | Unlocked vault process only | Until Owner removes it or the vault is locked | Full account, including new sessions, recovery, and often billing |
-| Website session cookie | Future daemon executor only; **never the agent** | Operation TTL, then wipe | Full logged-in account until the site expires or rotates the cookie. Often survives password grant expiry |
+| Website session cookie jar | Unlocked vault `session_jars` only (encrypted at rest) | Website session TTL (default 30 min, max 30 min), then wipe on lock/revoke | Full logged-in account until the site expires or rotates the cookie. Often survives password grant expiry |
+| Opaque website session handle | Agent result JSON and Node `website_sessions` row | Same TTL; `revoked_at` on credential revoke | Identifies a vault-held jar. Cannot replay the site login without the vault process |
 | Stackey DPoP access token | Agent memory; not printed | `min(60s, grant.expires_at)` | Stackey operations already granted, not the website password |
-| Agent-visible login result | Agent, Node operation row, events | Durable | Origin + outcome only. Must not be enough to replay the site login |
+| Agent-visible login result | Agent, Node operation row, events, audit_log | Durable | Origin + outcome + optional `session_handle` / `expires_at`. Never password or cookies |
 
 Handing a cookie to the agent (option B) turns a single-use password grant into a portable account token. Cookies are replayable, often `Secure` but present in the browser profile, and may outlive both the Stackey grant and the DPoP session. HttpOnly reduces page-script theft; it does not stop a compromised agent that received the cookie, a malicious extension, or a copied profile.
 
-This slice therefore **does not create, persist, or return cookies**.
+This slice **does not return cookies**. An authenticated mock login mints an opaque handle. The jar stays in the vault file. `website.session.fetch` is not in this PR.
 
 ### 3.4 What still needs the human
 
@@ -125,20 +126,20 @@ Reuse existing grant fields. No new token type.
 - **Default executor refuse**: only the built-in `refuseWebsiteLogin` function is a non-consuming refusal. It always becomes a brand-new `executor_unavailable` / `permission_denied` (fixed message, never the executor's own text).
 - **Executor exception**: any injected executor throw, including a spoofed `executor_unavailable` whose message contains the password, becomes `executor_failed`. That outcome is `result_unknown` and **does** consume the call.
 - **Orphaned `executing` row**: existing `result_unknown` + reservation retained. No automatic retry (a retry would be a second login).
-- **Revoke / lock / expiry**: existing fail-closed checks before and after the executor. In-flight results are not delivered to a revoked agent.
+- **Website session TTL**: default 1800 seconds (30 min), configurable 60–1800 via Node setting `website_session_ttl` or connection `session_ttl`. Agents never receive the jar.
+- **Revoke / lock / expiry**: existing fail-closed checks before and after the executor. In-flight results are not delivered to a revoked agent. `stackey credential revoke` deletes the password ciphertext, wipes jars, sets `revoked_at` on website sessions, bumps matching grant versions, and appends an audit row.
 
 A “single-use key” in the founder’s wording is this grant + call budget, not a new bearer secret given to the agent.
 
 ### 3.6 Audit trail and revocation
 
-Existing objects only:
-
 - `grant_approved` / `grant_revoked` — subject is the principal, object is the grant ID
 - `operation_dispatched` / `operation_completed` / `operation_failed` / `operation_result_unknown`
 - Grant row: pairing, principal, action, connection, `max_calls`, TTL, version
 - Operation row: hashes and sanitized JSON
+- `audit_log` (append-only): credential id, agent id, origin, time, result (`authenticated` \| `human_required` \| `failed` \| `refused` \| `revoked`), optional session handle. No secret. Read with `stackey audit`.
 
-Events still store kind, subject, object ID, and time. They must never store password, username, cookie, DPoP proof, or access token. Revocation bumps grant version, writes `stackey-revocation+jwt`, and invalidates existing DPoP sessions. It cannot un-type a password already submitted to a real site, and cannot retract a cookie already minted. That is why this slice does not mint cookies and why a real executor must wipe daemon state on revoke.
+Events still store kind, subject, object ID, and time. They must never store password, username, cookie, DPoP proof, or access token. Credential revoke and grant revoke both bump grant version, write `stackey-revocation+jwt`, and invalidate existing DPoP sessions. Revoke cannot un-type a password already submitted to a real site. Vault-held jars are wiped immediately.
 
 ## 4. Data model (minimal slice)
 
@@ -146,9 +147,12 @@ New vault kinds, same storage format:
 
 | Object | Addition | Notes |
 | --- | --- | --- |
-| Credential | `kind: website_login` | `value` is the password string. List/import return id, wallet, name, kind only |
-| Connection | `provider: website` | `config = { origin, username, credential_id }`. Origin is a fixed HTTPS origin (no path, query, userinfo, port, IP literal, IPv6/`[::1]`, localhost, or trailing-dot hosts such as `example.com.` / `example.com..`). List strips `config` |
-| Action | `website.session.login` | Empty params. Agent cannot pass a URL |
+| Credential | `kind: website_login` | `value` is the password string. List/import return id, wallet, name, kind only. `credential.remove` is refused; use `credential revoke` |
+| Connection | `provider: website` | `config = { origin, username, credential_id, session_ttl? }`. Origin is a fixed HTTPS origin (no path, query, userinfo, port, IP literal, IPv6/`[::1]`, localhost, wildcards, or trailing-dot hosts such as `example.com.` / `example.com..`). List strips `config` |
+| `credential_origins` | exact-origin allowlist | `(credential_id, origin)` in Node SQLite. `connection.add` inserts the pinned origin. Extra origins via `stackey credential origin-add`. Mismatch is `origin_not_allowed` |
+| `audit_log` | append-only | INSERT only (UPDATE/DELETE abort). CLI: `stackey audit` |
+| `website_sessions` | opaque handle | `handle_id`, credential, agent, origin, `expires_at`, `revoked_at`. Cookie jar is `session_jars` in the vault file, not this table |
+| Action | `website.session.login` | Empty params. Agent cannot pass a URL. Authenticated result may include `session_handle` and `expires_at` |
 | Grant | existing scoped grant | `max_calls = 1`, `max_amount_minor = 0`, resource `connection:<id>/website.session.login` |
 
 `password` remains a custody-only kind. A website connection must reference `website_login`, not `password` or `api_key`. That keeps “I stored a note” separate from “I authorized a login adapter”.
@@ -217,6 +221,10 @@ stackey node approve PAIRING_ID --principal FULL_FINGERPRINT \
 
 # Agent: empty params. Poll the operation. Expect executor_unavailable unless a test mock is injected.
 stackey run website.session.login --state-dir .stackey/agents/new-agent
+stackey audit --data-dir .stackey/vault-node
+stackey credential origin-add CREDENTIAL_ID --origin https://dashboard.example.test \
+  --vault-dir .stackey/vault --data-dir .stackey/vault-node
+stackey credential revoke CREDENTIAL_ID --vault-dir .stackey/vault --data-dir .stackey/vault-node
 stackey node revoke GRANT_ID --vault-dir .stackey/vault --data-dir .stackey/vault-node
 ```
 

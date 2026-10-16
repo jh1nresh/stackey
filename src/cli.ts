@@ -19,6 +19,7 @@ import { approvePairing, initializeOwner, revokeGrant, seconds } from './policy.
 import { backupVault, initializeVault, recovery, restoreVault } from './vault.js';
 import { unlockVault } from './vault-session.js';
 import { sessionPath, vaultRequest } from './vault-client.js';
+import { listAudit } from './website-sessions.js';
 
 const help = `Stackey — local agent authorization demo
 
@@ -32,6 +33,9 @@ const help = `Stackey — local agent authorization demo
   stackey credential list --wallet <id> [--vault-dir ...]
   stackey credential import --wallet <id> --name <name> --kind password|api_key|private_key|website_login --secret-file <private-JSON-file> [--vault-dir ...] [--request-id <uuid>]
   stackey credential remove <credential-id> [--vault-dir ...]
+  stackey credential origin-add <credential-id> --origin https://host [--vault-dir ...] [--data-dir ...]
+  stackey credential revoke <credential-id> [--vault-dir ...] [--data-dir ...]
+  stackey audit [--data-dir ...] [--after <audit-id>]
   stackey connection list --wallet <id> [--vault-dir ...]
   stackey connection add --wallet <id> --name <name> --provider demo|supabase|vercel|stripe|website --config-file <private-JSON-file> [--vault-dir ...] [--request-id <uuid>]
   stackey link login | finish | cancel --wallet <id> [--vault-dir ...]
@@ -85,6 +89,7 @@ async function main() {
       'backup-file': { type: 'string' }, 'secret-file': { type: 'string' }, wallet: { type: 'string' },
       connection: { type: 'string' }, 'max-calls': { type: 'string' }, 'max-amount-minor': { type: 'string' }, prompt: { type: 'string' },
       kind: { type: 'string' }, provider: { type: 'string' }, 'config-file': { type: 'string' },
+      origin: { type: 'string' },
       'request-id': { type: 'string' },
       port: { type: 'string' }, ttl: { type: 'string' }, name: { type: 'string' },
       after: { type: 'string' },
@@ -139,13 +144,17 @@ async function main() {
     else if(command==='wallet' && subcommand==='create') args={name:textField(values.name,64)};
     else if(command==='credential' && subcommand==='import') args={wallet_id:textField(values.wallet,64),name:textField(values.name,64),kind:textField(values.kind,32),value:textField(record(readPrivateJson(resolve(textField(values['secret-file'])))).value,16384)};
     else if(command==='credential' && subcommand==='remove' && positionals.length===3) args={credential_id:textField(positionals[2],64)};
+    else if(command==='credential' && subcommand==='revoke' && positionals.length===3) args={credential_id:textField(positionals[2],64),_node_dir:dataDir};
+    else if(command==='credential' && subcommand==='origin-add' && positionals.length===3) args={credential_id:textField(positionals[2],64),origin:textField(values.origin,250),_node_dir:dataDir};
     else if(subcommand==='list' && ['credential','connection'].includes(command!)) args={wallet_id:textField(values.wallet,64)};
     else if(command==='connection' && subcommand==='add') args={wallet_id:textField(values.wallet,64),name:textField(values.name,64),provider:textField(values.provider,32),config:record(readPrivateJson(resolve(textField(values['config-file']))))};
     else throw new AppError('unknown_command','Use --help for wallet commands.');
-    if(positionals.length!==(command==='credential' && subcommand==='remove'?3:2)) throw new AppError('invalid_arguments','Unexpected wallet arguments.');
+    const extra = command==='credential' && ['remove','revoke','origin-add'].includes(subcommand ?? '') ? 3 : 2;
+    if(positionals.length!==extra) throw new AppError('invalid_arguments','Unexpected wallet arguments.');
     if(subcommand==='list' && values.after!==undefined) args.after=textField(values.after,64);
     if(['wallet.create','credential.import','connection.add'].includes(`${command}.${subcommand}`)) args.request_id=values['request-id']??randomUUID();
-    output(envelope('ok',await vaultRequest(vaultDir,command+'.'+subcommand,args))); return;
+    const vaultCommand = command==='credential' && subcommand==='origin-add' ? 'credential.origin.add' : `${command}.${subcommand}`;
+    output(envelope('ok',await vaultRequest(vaultDir,vaultCommand,args))); return;
   }
   if (command === 'node') {
     if (values['vault-dir'] && ['owner-init','approve','revoke','demo-init'].includes(positionals[1] ?? '')) {
@@ -244,6 +253,13 @@ async function main() {
       finally { store.close(); }
       return;
     }
+  }
+  if (command === 'audit' && positionals.length === 1) {
+    await loadIdentity(dataDir, 'node');
+    const store = new Store(dataDir);
+    try { output(envelope('ok', listAudit(store, values.after === undefined ? undefined : textField(values.after, 36)))); }
+    finally { store.close(); }
+    return;
   }
   if (command === 'connect') {
     if (positionals.length > 2 || (values['invite-file'] && positionals[1])) {

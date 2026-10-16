@@ -3,6 +3,7 @@ import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { AppError, invalid } from './contracts.js';
 import { privateDirectory } from './identity.js';
+import { ensureWebsiteLoginTables } from './website-sessions.js';
 
 export interface Pairing {
   pairing_id: string;
@@ -85,6 +86,7 @@ export class Store {
       input_hash TEXT NOT NULL, action TEXT NOT NULL, created_at INTEGER NOT NULL, state TEXT NOT NULL,
       reserved_minor INTEGER NOT NULL, result_json TEXT
     )`);
+    ensureWebsiteLoginTables(this);
   }
 
   transaction<T>(work: () => T): T {
