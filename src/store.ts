@@ -4,6 +4,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { AppError, invalid } from './contracts.js';
 import { privateDirectory } from './identity.js';
 import { ensureWebsiteLoginTables } from './website-sessions.js';
+import { ensureRenewableGrants } from './grant-schema.js';
 
 export interface Pairing {
   pairing_id: string;
@@ -81,6 +82,8 @@ export class Store {
     ]) {
       if (!this.db.prepare('PRAGMA table_info(grants)').all().some(row => row.name === name)) this.db.exec(`ALTER TABLE grants ADD COLUMN ${name} ${definition}`);
     }
+    try { ensureRenewableGrants(this.db); }
+    catch (error) { this.db.close(); throw error; }
     this.db.exec(`CREATE TABLE IF NOT EXISTS provider_operations (
       operation_id TEXT PRIMARY KEY, grant_id TEXT NOT NULL REFERENCES grants(grant_id), principal TEXT NOT NULL,
       input_hash TEXT NOT NULL, action TEXT NOT NULL, created_at INTEGER NOT NULL, state TEXT NOT NULL,

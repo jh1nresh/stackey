@@ -301,13 +301,15 @@ export async function unlockVault(dir:string,recoveryFile:string|undefined,nodeD
       try {
         if(command==='demo.init'){exact([]);initializeDemo(store,guard);return {source:'local_synthetic',rows:21};}
         if(command==='grant.revoke'){exact(['grant_id']);return await revokeGrant(store,node,vault.owner,textField(args.grant_id,36),clock,guard);}
-        exact(['pairing_id','principal','action','ttl','wallet_id'],['connection_id','max_calls','max_amount_minor']);const w=wallet(args.wallet_id);
+        exact(['pairing_id','principal','action','ttl','wallet_id'],['connection_id','max_calls','max_amount_minor','replace_grant_id']);const w=wallet(args.wallet_id);
+        const replaceGrantId=args.replace_grant_id===undefined?undefined:textField(args.replace_grant_id,36);
+        if(replaceGrantId!==undefined&&args.action!==CREDENTIAL_GET_ACTION)throw new AppError('replacement_mismatch','Only credential.get grants can be replaced.');
         if(args.action!=='demo.orders.read'){
           const connection=vault.data.connections.find(c=>c.id===args.connection_id&&c.wallet_id===w.id&&supports(c,String(args.action)));
           if(!connection)throw new AppError('connection_unavailable','Select a matching connection in this wallet.');
           connectionConfig(connection.provider,connection.config,vault.data,w.id);
           const singleUseGrant=args.action===WEBSITE_LOGIN_ACTION||args.action===CREDENTIAL_GET_ACTION;
-          return await approvePairing(store,node,vault.owner,textField(args.pairing_id,36),textField(args.principal,64),textField(args.action,64),Number(args.ttl),clock,w.id,{connection_id:connection.id,max_calls:integer(args.max_calls??1,1,singleUseGrant?1:100),max_amount_minor:integer(args.max_amount_minor??0,0,singleUseGrant?0:10000)},guard);
+          return await approvePairing(store,node,vault.owner,textField(args.pairing_id,36),textField(args.principal,64),textField(args.action,64),Number(args.ttl),clock,w.id,{connection_id:connection.id,max_calls:integer(args.max_calls??1,1,singleUseGrant?1:100),max_amount_minor:integer(args.max_amount_minor??0,0,singleUseGrant?0:10000)},guard,replaceGrantId);
         }
         if(!vault.data.connections.some(c=>c.wallet_id===w.id&&c.provider==='demo'))throw new AppError('connection_unavailable','Connect a demo resource to this wallet first.');
         return await approvePairing(store,node,vault.owner,textField(args.pairing_id,36),textField(args.principal,64),textField(args.action,64),Number(args.ttl),clock,w.id,undefined,guard);

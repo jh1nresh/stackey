@@ -76,6 +76,52 @@ node dist/src/cli.js audit --data-dir .stackey/vault-node
 
 錢包、憑證和 connection 清單每頁 100 筆。當 `next_cursor` 非 null，使用 `--after NEXT_CURSOR` 取得下一頁，直到 `complete: true`。
 
+## 讓 Agent 取用同一筆帳密：每次 Owner 核准，不用重新配對
+
+先完成上面的 Node、vault unlock、owner-init 及 credential import。初次試跑只用測試憑證。Owner 準備 0600 JSON config 檔案：`{"origin":"https://dashboard.example.test","credential_id":"CREDENTIAL_ID"}`，將 ID 換成匯入結果；不再複製秘密。
+
+```bash
+node dist/src/cli.js connection add --wallet wallet_demo --name Dashboard \
+  --provider credential --config-file .stackey/credential-config.json --vault-dir .stackey/vault
+node dist/src/cli.js node invite --out .stackey/codex-invite.json --data-dir .stackey/vault-node
+node dist/src/cli.js connect --invite-file .stackey/codex-invite.json \
+  --state-dir .stackey/agents/codex --name Codex
+```
+
+Owner 核對配對回傳的完整指紋、connection 與 wallet，再核准：
+
+```bash
+node dist/src/cli.js node approve PAIRING_ID --principal FULL_FINGERPRINT \
+  --action credential.get --connection CONNECTION_ID --wallet wallet_demo \
+  --vault-dir .stackey/vault --data-dir .stackey/vault-node
+```
+
+省略 TTL 時預設為 300 秒，允許 60–300 秒，`max_calls` 固定為 1。Agent 只需保留自己的 state directory：
+
+```bash
+node dist/src/cli.js status --live --state-dir .stackey/agents/codex
+node dist/src/cli.js credential get --state-dir .stackey/agents/codex
+```
+
+成功輸出為 `{"value":"..."}`，供 Agent 的工具使用；不要把真實輸出貼進聊天或紀錄檔。此流程交付原始秘密，不執行網站登入；origin 是核准取用的條件，不能限制已交付密碼之後的用途，也不能代替 MFA。
+
+下一次取用，由 Owner 讀取 `node grants` 或 Agent 的 `status --live`，取得當前 Grant ID，對同一 pairing／指紋／connection 再核准：
+
+```bash
+node dist/src/cli.js node approve PAIRING_ID --principal FULL_FINGERPRINT \
+  --action credential.get --connection CONNECTION_ID --wallet wallet_demo \
+  --replace-grant CURRENT_GRANT_ID \
+  --vault-dir .stackey/vault --data-dir .stackey/vault-node
+```
+
+新舊 Grant 在同一交易內切換，回傳新的 Grant ID；舊 Grant、session 與舊 operation 不能靠新授權再次取回秘密，歷史紀錄保留。重送舊 `--replace-grant` 會拒絕，請先查當前 Grant，避免誤發另一張授權。允許 Owner 明確取代已用完、過期或撤銷的 Grant；Agent 本身不能續期，且不能藉此變更帳號／wallet／action。其他 action 不支援此旗標。
+
+第二個 Agent 用新 invitation 與自己的 state directory 配對，再由 Owner 核准同一個 CONNECTION_ID。憑證只保存一份，各 Agent 的 Grant、取用次數與撤銷互不共用。重啟 Node／重新解鎖相同 vault 後，原 Agent state directory 仍可用；已用完的 Grant 不會因重啟恢復次數。
+
+Agent 收到 `node_locked` 時 exit code 為 3，表示需 Owner 解鎖；不要把它當作參數錯誤而重新配對。
+
+`node revoke GRANT_ID` 停止該 Grant 後續取用，不會收回已交付的密碼或網站登入狀態。升級涉及 grants 表遷移，請先依 [升級步驟](CLI_AUTHORIZATION.md#本機重現) 停止舊程序並備份。
+
 ## 連接測試資源並授權 agent
 
 為 demo provider 準備私有 JSON config 檔案，內容 `{}`：
@@ -97,7 +143,7 @@ node dist/src/cli.js run demo.orders.read --from 2026-09-26 --to 2026-10-02 \
   --state-dir .stackey/agents/new-agent
 ```
 
-可選取 `wallet create` 回傳的另一個 wallet ID；先在該 wallet 連接 demo，再核准。Grant 的 wallet 與 Owner 簽章綁定；每個配對仍只有一個任務 Grant。Demo connections 是同一份本機合成訂單的資源引用，沒有各自的外部帳號或真實付款。
+可選取 `wallet create` 回傳的另一個 wallet ID；先在該 wallet 連接 demo，再核准。Grant 的 wallet 與 Owner 簽章綁定；demo 每個配對仍只核發一次任務 Grant。Demo connections 是同一份本機合成訂單的資源引用，沒有各自的外部帳號或真實付款。
 
 Connection 可連接 Supabase 訂單唯讀、Vercel AI Gateway 模型生成與 Stripe 測試付款唯讀；key 與 config 不出現在清單中。設定及實際驗收見 [CLI 服務整合指南](CLI_INTEGRATIONS.md)。MPP 的真實商家收款驗收另有帳號與部署前置條件。
 

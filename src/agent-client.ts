@@ -50,7 +50,7 @@ export async function verifiedResponse(context: AgentContext, response: Response
     const error = record(body.error);
     const status = textField(body.status, 64);
     throw new AppError(textField(error.code, 64), textField(error.message, 512), response.status,
-      status === 'permission_denied' || status === 'grant_expired' || status === 'grant_revoked' ? 3 :
+      status === 'permission_denied' || status === 'grant_expired' || status === 'grant_revoked' || status === 'node_locked' ? 3 :
         status === 'rate_limited' ? 4 : 2, status);
   }
   return body;

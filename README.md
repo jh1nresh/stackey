@@ -14,6 +14,8 @@ For API setup for the three services, agent execution, and the sandbox test evid
 
 For the local vault and seed-backed Owner, see the [CLI vault guide](docs/CLI_VAULT.md). The legacy pairing demo continues to use its existing Owner and does not migrate automatically.
 
+For agent password/API-key access, use the [credential handoff walkthrough](docs/CLI_VAULT.md#讓-agent-取用同一筆帳密每次-owner-核准不用重新配對). Store a credential once, pair each agent once, and approve each retrieval. The Owner can replace a spent or expired `credential.get` grant on the same pairing; each grant still permits only one retrieval within 60–300 seconds. This hands over the credential; it does not automate website login.
+
 ## Local Setup: Step One
 
 Requires macOS or Linux and Node.js 22.18 or later. Stackey uses Node's native SQLite support; Node 22 may print an experimental warning to stderr.

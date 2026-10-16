@@ -11,7 +11,7 @@ import { startNode } from './node.js';
 import { issueInvitation } from './pairing.js';
 import { Store } from './store.js';
 import { capabilities, liveStatus, operation, runOrders, takeCredential } from './agent-client.js';
-import { CREDENTIAL_GET_ACTION } from './credential-get.js';
+import { CREDENTIAL_GET_ACTION, CREDENTIAL_GET_TTL_MAX } from './credential-get.js';
 import { onboardLink } from './link-onboarding.js';
 import { providerAction, providerSchema } from './providers.js';
 import { ACTION, CONNECTION, initializeDemo, ORDER_SCHEMA } from './orders.js';
@@ -66,6 +66,8 @@ const help = `Stackey — local agent authorization demo
   stackey run demo.orders.read --schema
   stackey run demo.orders.read --from 2026-09-26 --to 2026-10-02 [--cursor ...] [--operation-id ...] [--state-dir ...]
   stackey node approve <pairing-id> --principal <fingerprint> --action <provider-action> --connection <id> --wallet <id> --vault-dir ... [--max-calls 1] [--max-amount-minor 50]
+      # credential.get defaults to 300 seconds; other actions default to 900
+      # approve credential.get again with --replace-grant <current-grant-id>; same pairing and connection
   stackey run supabase.orders.read --from YYYY-MM-DD --to YYYY-MM-DD [--cursor ...]
   stackey run vercel.ai.generate --prompt <text> [--operation-id ...]
   stackey run stripe.payments.read [--cursor ...]
@@ -101,7 +103,16 @@ async function main() {
   }
   let parsed;
   try {
-    parsed = parseArgs({ options: {
+    const args = process.argv.slice(2);
+    // Public SHA-256 fingerprints are base64url and may begin with '-'.
+    // Preserve the documented separate argument form without treating a valid
+    // fingerprint as a CLI option; identity verification still happens at approval.
+    for (let i = 0; i < args.length && args[i] !== '--'; i++) {
+      if (args[i] === '--principal' && /^-[A-Za-z0-9_-]{42}$/.test(args[i + 1] ?? '')) {
+        args.splice(i, 2, `--principal=${args[i + 1]}`);
+      }
+    }
+    parsed = parseArgs({ args, options: {
       'data-dir': { type: 'string' }, 'state-dir': { type: 'string' },
       'owner-dir': { type: 'string' }, principal: { type: 'string' }, action: { type: 'string' },
       live: { type: 'boolean' }, schema: { type: 'boolean' }, from: { type: 'string' }, to: { type: 'string' },
@@ -115,6 +126,7 @@ async function main() {
       icloud: { type: 'boolean' },
       'password-file': { type: 'string' },
       'request-id': { type: 'string' },
+      'replace-grant': { type: 'string' },
       port: { type: 'string' }, ttl: { type: 'string' }, name: { type: 'string' },
       after: { type: 'string' },
       json: { type: 'boolean' },
@@ -126,6 +138,10 @@ async function main() {
   const stateDir = resolve(values['state-dir'] ?? '.stackey/agent');
   const ownerDir = resolve(values['owner-dir'] ?? '.stackey/owner');
   const vaultDir = resolve(values['vault-dir'] ?? '.stackey/vault');
+  if (values['replace-grant'] !== undefined &&
+      (command !== 'node' || positionals[1] !== 'approve' || !values['vault-dir'] || values.action !== CREDENTIAL_GET_ACTION)) {
+    throw new AppError('invalid_arguments', '--replace-grant requires node approve credential.get with --vault-dir.');
+  }
   if (command === 'link') {
     const sub = positionals[1];
     if (positionals.length !== 2 || !['login', 'finish', 'cancel'].includes(sub ?? '')) throw new AppError('invalid_arguments', 'Use link login, finish or cancel.');
@@ -224,7 +240,8 @@ async function main() {
       if (positionals.length !== (sub==='approve'||sub==='revoke'?3:2)) throw new AppError('invalid_arguments','Unexpected Node arguments.');
       const args:Record<string,unknown>={_node_dir:dataDir};
       const action=sub==='owner-init'?'node.bind':sub==='demo-init'?'demo.init':sub==='approve'?'grant.approve':'grant.revoke';
-      if(sub==='approve') Object.assign(args,{pairing_id:textField(positionals[2],36),principal:textField(values.principal,64),action:textField(values.action,64),ttl:values.ttl===undefined?900:Number(values.ttl),wallet_id:values.wallet??'wallet_demo',...(values.connection?{connection_id:values.connection,max_calls:Number(values['max-calls']??1),max_amount_minor:Number(values['max-amount-minor']??0)}:{})});
+      if(sub==='approve') Object.assign(args,{pairing_id:textField(positionals[2],36),principal:textField(values.principal,64),action:textField(values.action,64),ttl:values.ttl===undefined?(values.action===CREDENTIAL_GET_ACTION?CREDENTIAL_GET_TTL_MAX:900):Number(values.ttl),wallet_id:values.wallet??'wallet_demo',...(values.connection?{connection_id:values.connection,max_calls:Number(values['max-calls']??1),max_amount_minor:Number(values['max-amount-minor']??0)}:{})});
+      if(values['replace-grant']!==undefined) args.replace_grant_id=textField(values['replace-grant'],36);
       if(sub==='revoke') args.grant_id=textField(positionals[2],36);
       output(envelope('ok',await vaultRequest(vaultDir,action,args))); return;
     }
@@ -262,7 +279,7 @@ async function main() {
             if (!row) throw new AppError('invalid_cursor', 'Grant cursor was not found.');
             timestamp = row.created_at as number; id = row.grant_id as string;
           }
-          const rows = store.db.prepare(`SELECT grant_id, pairing_id, principal, created_at, expires_at, version, wallet_id, action, connection_id, max_calls, max_amount_minor,
+          const rows = store.db.prepare(`SELECT grant_id, pairing_id, principal, created_at, expires_at, version, wallet_id, action, connection_id, max_calls, max_amount_minor, superseded_at,
             CASE WHEN revoked_at IS NOT NULL THEN 'revoked' WHEN expires_at <= ? THEN 'expired' ELSE 'active' END AS status
             FROM grants WHERE (created_at, grant_id) > (?, ?) ORDER BY created_at, grant_id LIMIT 201`).all(seconds(), timestamp, id);
           const page = rows.slice(0, 200);
