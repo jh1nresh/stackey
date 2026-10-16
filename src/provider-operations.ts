@@ -1,5 +1,5 @@
 import type { AgentRequest } from './access.js';
-import { AppError, digest, envelope, publicError, record, textField } from './contracts.js';
+import { AppError, digest, envelope, isPublicErrorCode, publicError, publicErrorMessage, record, textField } from './contracts.js';
 import type { Identity } from './identity.js';
 import { consumeProof, event, type Grant, type ProofTime } from './policy.js';
 import { providerParams, providerSchema } from './providers.js';
@@ -31,8 +31,8 @@ export async function dispatchProviderOperation(store: Store, node: Identity, re
       if (existing.state === 'failed') {
         const payload = existing.result_json ? record(JSON.parse(String(existing.result_json))) : {};
         const err = payload.error ? record(payload.error) : {};
-        throw new AppError(typeof err.code === 'string' ? err.code : 'permission_denied',
-          typeof err.message === 'string' ? err.message : 'Website login is not enabled.', 403, 3, 'permission_denied');
+        const code = typeof err.code === 'string' && isPublicErrorCode(err.code) ? err.code : 'permission_denied';
+        throw new AppError(code, publicErrorMessage(code), 403, 3, 'permission_denied');
       }
       if (route === 'run' && existing.input_hash !== inputHash) throw new AppError('operation_conflict', 'Operation ID belongs to different parameters.', 409);
       if (route === 'run' && existing.state === 'approval_required') {
@@ -72,11 +72,11 @@ export async function dispatchProviderOperation(store: Store, node: Identity, re
           event(store, response.state === 'completed' ? 'operation_completed' : 'payment_approval_required', principal, operationId, clock());
         });
       } catch (error) {
-        const safe = publicError(error);
-        const refused = grant.action === 'website.session.login' && safe.body.error.code === 'executor_unavailable';
+        const code = publicError(error).body.error.code;
+        const refused = grant.action === 'website.session.login' && code === 'executor_unavailable';
         store.transaction(() => {
           store.db.prepare('UPDATE provider_operations SET state=?,result_json=? WHERE operation_id=?')
-            .run(refused ? 'failed' : 'result_unknown', JSON.stringify({ error: safe.body.error }), operationId);
+            .run(refused ? 'failed' : 'result_unknown', JSON.stringify({ error: { code } }), operationId);
           event(store, refused ? 'operation_failed' : 'operation_result_unknown', principal, operationId, clock());
         });
       } finally { inFlight.delete(key); pending.delete(key); }
