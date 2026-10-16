@@ -33,6 +33,8 @@ The Node persists `{issued:true}` for the operation. The secret exists in proces
 
 `stackey credential get` is the agent CLI: it polls that one-shot operation and prints `{value}` only. Everything else on stdout is an error envelope without the secret.
 
+Local implementation update (2026-10-16): after each use, the Owner may explicitly approve the same pairing and credential connection again with `node approve ... --replace-grant CURRENT_GRANT_ID`. Replacement atomically revokes/supersedes the previous grant and creates a new single-use grant; historical grants and operations remain. Stale or cross-pairing/connection replacements fail. The agent identity and pairing persist, but access never renews automatically. This also permits an explicit Owner reapproval after expiry or revocation. Hosted/multi-user architecture remains design-only.
+
 ## 3. Hosted option (not this milestone)
 
 A hosted Stackey would keep the same grant model. It would not become a login proxy.

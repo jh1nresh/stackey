@@ -10,6 +10,7 @@ import type { Store } from './store.js';
 export interface Grant {
   grant_id: string; pairing_id: string; principal: string; signed_grant: string;
   created_at: number; expires_at: number; version: number; revoked_at: number | null; wallet_id: string; action: string; connection_id: string; resource: string; max_calls: number; max_amount_minor: number;
+  superseded_at: number | null;
 }
 export const seconds = () => Math.floor(Date.now() / 1000);
 export function denied(code: string, message: string): never {
@@ -38,7 +39,7 @@ async function ownerKey(store: Store) {
 }
 
 export async function approvePairing(store: Store, node: Identity, owner: Identity,
-  pairingId: string, principal: string, action: string, ttl: number, clock = seconds, walletId = WALLET, scope?: { connection_id: string; max_calls: number; max_amount_minor: number }, guard?: (store: Store) => void) {
+  pairingId: string, principal: string, action: string, ttl: number, clock = seconds, walletId = WALLET, scope?: { connection_id: string; max_calls: number; max_amount_minor: number }, guard?: (store: Store) => void, replaceGrantId?: string) {
   if (action !== ACTION && (!providerAction(action) || !scope)) denied('action_not_available', 'Select a supported action and connection.');
   const connectionId = scope?.connection_id ?? CONNECTION;
   const resource = scope ? resourceFor(action, connectionId) : RESOURCE;
@@ -59,7 +60,19 @@ export async function approvePairing(store: Store, node: Identity, owner: Identi
   if (owner.id !== pinned.id) denied('owner_mismatch', 'Owner signer does not match this Node.');
   const pairing = store.db.prepare('SELECT principal FROM pairings WHERE pairing_id = ?').get(pairingId);
   if (!pairing || pairing.principal !== principal) denied('principal_mismatch', 'Pairing and full principal fingerprint must match.');
+  const previous = grantForPairing(store, pairingId);
+  if (replaceGrantId !== undefined && (!credentialGet || !previous || previous.grant_id !== replaceGrantId ||
+      previous.principal !== principal || previous.action !== action || previous.wallet_id !== walletId ||
+      previous.connection_id !== connectionId || previous.resource !== resource)) {
+    denied('replacement_mismatch', 'Replace only the current credential grant for this pairing and connection.');
+  }
   const now = clock(); const grantId = randomUUID();
+  const revocation = replaceGrantId !== undefined && previous!.revoked_at === null
+    ? await new SignJWT({ grant_id: previous!.grant_id, version: previous!.version, action: 'revoke' })
+      .setProtectedHeader({ alg: 'EdDSA', typ: 'stackey-revocation+jwt' }).setIssuer(owner.id)
+      .setAudience(node.id).setIssuedAt(now).setExpirationTime(now + 30)
+      .sign(await importJWK(owner.privateJwk, 'EdDSA'))
+    : undefined;
   const signed = await new SignJWT({ grant_id: grantId, pairing_id: pairingId, subject: principal,
     wallet_id: walletId, connection_id: connectionId, resource, actions: [action],
     ...(scope ? { max_calls: maxCalls, max_amount_minor: maxAmount, currency: 'usd' } : {}),
@@ -76,8 +89,21 @@ export async function approvePairing(store: Store, node: Identity, owner: Identi
     guard?.(store);
     const current = clock();
     if (current >= now + ttl) denied('grant_expired', 'Grant expired before acceptance.');
-    if (store.db.prepare('SELECT 1 FROM grants WHERE pairing_id = ?').get(pairingId)) {
-      throw new AppError('already_approved', 'This pairing already has a grant; create a new pairing for a new task.');
+    const currentGrant = grantForPairing(store, pairingId);
+    if (replaceGrantId !== undefined) {
+      if (!currentGrant || currentGrant.grant_id !== replaceGrantId || currentGrant.version !== previous!.version ||
+          currentGrant.signed_grant !== previous!.signed_grant || currentGrant.revoked_at !== previous!.revoked_at) {
+        denied('policy_changed', 'Policy changed during verification; request current status again.');
+      }
+      if (current >= now + 30) denied('invalid_owner_proof', 'Owner confirmation expired before acceptance.');
+      if (currentGrant.revoked_at === null) {
+        store.db.prepare('UPDATE grants SET revoked_at=?, version=version+1, signed_revocation=? WHERE grant_id=?')
+          .run(current, revocation!, replaceGrantId);
+        event(store, 'grant_revoked', principal, replaceGrantId, current);
+      }
+      store.db.prepare('UPDATE grants SET superseded_at=? WHERE grant_id=?').run(current, replaceGrantId);
+    } else if (currentGrant) {
+      throw new AppError('already_approved', 'This pairing already has a grant. For credential.get, the Owner can approve again with --replace-grant and the current grant ID.');
     }
     store.db.prepare('INSERT INTO grants(grant_id, pairing_id, principal, signed_grant, created_at, expires_at, version, wallet_id, action, connection_id, resource, max_calls, max_amount_minor) VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?)')
       .run(grantId, pairingId, principal, signed, now, now + ttl, walletId, action, connectionId, resource, maxCalls, maxAmount);
@@ -89,7 +115,7 @@ export async function approvePairing(store: Store, node: Identity, owner: Identi
 }
 
 export function grantForPairing(store: Store, pairingId: string): Grant | undefined {
-  return store.db.prepare('SELECT * FROM grants WHERE pairing_id = ?').get(pairingId) as unknown as Grant | undefined;
+  return store.db.prepare('SELECT * FROM grants WHERE pairing_id = ? AND superseded_at IS NULL').get(pairingId) as unknown as Grant | undefined;
 }
 export function requireGrant(store: Store, grantId: string, principal: string, now: number): Grant {
   const vault = store.db.prepare("SELECT value FROM settings WHERE key='vault_dir'").get();

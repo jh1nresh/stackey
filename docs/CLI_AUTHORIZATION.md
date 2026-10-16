@@ -4,7 +4,7 @@
 
 ## 本機重現
 
-更新後先在原 Node 終端機按 Ctrl+C，於 repo 執行 `npm ci`、`npm run build`，再執行 `node dist/src/cli.js node start`。沿用原 `.stackey/node` 與 agent 目錄，不需刪除或重新配對。資料庫只有新增表，既有身分與 pairing 保留。
+升級前停止舊 Node 與 vault unlock 程序，並備份停止寫入後的 Node 目錄；於 repo 執行 `npm ci --ignore-scripts`、`npm run build`，再啟動新版 Node 與 vault。沿用原 Node 與 agent 目錄，不需刪除或重新配對。新版首次開啟 SQLite 時會在交易內重建 grants 表，保留舊資料、簽章與外鍵，改為每個 pairing 只有一張未被取代的 Grant。完整性檢查失敗會回滾；請勿混跑舊版與新版程序或直接降版使用升級後的資料庫。回退須還原升級前完整 Node 備份。
 
 另一個終端機準備 owner 與固定的 21 筆合成訂單：
 
@@ -24,7 +24,7 @@ node dist/src/cli.js node approve "PAIRING_ID" \
   --action demo.orders.read --ttl 900
 ```
 
-Owner 必須確認指紋、操作與期限；不是只看可任意填寫的 agent 名稱。每個 pairing 只接受一次 Grant，TTL 60–900 秒，固定 Wallet／Connection／資源，不允許再委派。新的任務／到期後重新核准需新 pairing；renewal 不在此版。
+Owner 必須確認指紋、操作與期限；不是只看可任意填寫的 agent 名稱。此 demo.orders.read 流程每個 pairing 仍只接受一次 Grant，TTL 60–900 秒，固定 Wallet／Connection／資源，不允許再委派。僅 `credential.get` 支援 Owner 透過 `--replace-grant CURRENT_GRANT_ID` 在原 pairing 重新核准相同帳號連接；每次仍只取用一次、TTL 60–300 秒，詳見 [CLI vault 指南](CLI_VAULT.md#讓-agent-取用同一筆帳密每次-owner-核准不用重新配對)。
 
 Agent 使用原 state directory（下面以已配對的 `.stackey/agents/codex` 為例）：
 

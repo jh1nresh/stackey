@@ -6,7 +6,7 @@ import { mkdtempSync, readFileSync, readdirSync, rmSync, statSync } from 'node:f
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { test, type TestContext } from 'node:test';
-import { capabilities, operation, runOrders, takeCredential } from '../src/agent-client.js';
+import { agentContext, capabilities, operation, resourceRequest, runOrders, session, takeCredential } from '../src/agent-client.js';
 import { connect } from '../src/client.js';
 import { AppError } from '../src/contracts.js';
 import { CREDENTIAL_GET_ACTION } from '../src/credential-get.js';
@@ -89,7 +89,7 @@ async function runtime(t: TestContext, secret = SECRET) {
   const agent = join(root, 'agent');
   const invitation = await issueInvitation(store, identity, 300);
   const pairing = (await connect(invitation, agent, 'Get Agent')).data as any;
-  return { root, dir, node, store, agent, owner, imported, connected, pairing, identity };
+  return { root, dir, node, store, agent, owner, imported, connected, pairing, identity, vault, recovery };
 }
 
 async function approve(f: Awaited<ReturnType<typeof runtime>>, ttl = 300) {
@@ -97,6 +97,151 @@ async function approve(f: Awaited<ReturnType<typeof runtime>>, ttl = 300) {
     principal: f.pairing.principal, action: CREDENTIAL_GET_ACTION, ttl, wallet_id: 'wallet_demo',
     connection_id: f.connected.id, max_calls: 1, max_amount_minor: 0 });
 }
+
+async function cliResult(...args: string[]) {
+  const child = spawn(process.execPath, [cli, ...args], { env: process.env });
+  let stdout = ''; let stderr = '';
+  child.stdout.on('data', chunk => { stdout += chunk; });
+  child.stderr.on('data', chunk => { stderr += chunk; });
+  const [code] = await once(child, 'close');
+  return { code, body: JSON.parse(stdout), stderr };
+}
+
+test('real CLI approves credential access without requiring an undocumented TTL override', async t => {
+  const f = await runtime(t);
+  const args = ['node', 'approve', f.pairing.pairing_id, '--principal', f.pairing.principal,
+    '--action', CREDENTIAL_GET_ACTION, '--connection', String(f.connected.id), '--wallet', 'wallet_demo',
+    '--vault-dir', f.dir, '--data-dir', f.store.directory];
+  const invalid = await cliResult(...args, '--ttl', '301');
+  assert.equal(invalid.body.error.code, 'invalid_ttl');
+  const started = Math.floor(Date.now() / 1000);
+  const approved = await cliResult(...args);
+  assert.equal(approved.code, 0, JSON.stringify(approved.body));
+  assert.ok(approved.body.data.expires_at >= started + 300);
+  assert.ok(approved.body.data.expires_at <= Math.floor(Date.now() / 1000) + 300);
+  assert.equal(approved.body.data.max_calls, 1);
+  const fetched = await cliResult('credential', 'get', '--state-dir', f.agent);
+  assert.equal(fetched.code, 0);
+  assert.deepEqual(fetched.body, { value: SECRET });
+  assertSecretAbsent(SECRET, approved, invalid, fetched.stderr, traces(f.store));
+});
+
+test('CLI treats a leading-dash fingerprint as a value and still verifies the principal', async t => {
+  const f = await runtime(t);
+  const result = await cliResult('node', 'approve', f.pairing.pairing_id,
+    '--principal', '-' + 'a'.repeat(42), '--action', CREDENTIAL_GET_ACTION,
+    '--connection', String(f.connected.id), '--wallet', 'wallet_demo',
+    '--vault-dir', f.dir, '--data-dir', f.store.directory);
+  assert.equal(result.code, 3);
+  assert.equal(result.body.error.code, 'principal_mismatch');
+  assert.equal(f.store.db.prepare('SELECT COUNT(*) AS n FROM grants').get()!.n, 0);
+});
+
+test('real CLI agent trial: share one credential, approve each use without re-pairing, restart and revoke independently', async t => {
+  const f = await runtime(t);
+  const ownerFlags = ['--vault-dir', f.dir, '--data-dir', f.store.directory];
+  const args = ['node', 'approve', f.pairing.pairing_id, '--principal', f.pairing.principal,
+    '--action', CREDENTIAL_GET_ACTION, '--connection', String(f.connected.id), '--wallet', 'wallet_demo', ...ownerFlags];
+  const receipt = readFileSync(join(f.agent, 'pairing.json'));
+  const identity = readFileSync(join(f.agent, 'identity.json'));
+  assert.equal((await cliResult('credential', 'get', '--state-dir', f.agent)).code, 3);
+  const first = await cliResult(...args);
+  assert.equal(first.code, 0);
+  const context = await agentContext(f.agent);
+  const oldSession = await session(context);
+  const oldOperation = randomUUID();
+  assert.deepEqual((await cliResult('credential', 'get', '--state-dir', f.agent, '--operation-id', oldOperation)).body, { value: SECRET });
+  assert.equal((await cliResult('credential', 'get', '--state-dir', f.agent)).body.error.code, 'budget_exceeded');
+  assert.equal((await cliResult(...args)).body.error.code, 'already_approved');
+
+  const inviteFile = join(f.root, 'second-invite.json');
+  const agentB = join(f.root, 'second-agent');
+  assert.equal((await cliResult('node', 'invite', '--out', inviteFile, '--data-dir', f.store.directory)).code, 0);
+  const pairedB = await cliResult('connect', '--invite-file', inviteFile, '--state-dir', agentB, '--name', 'Second CLI Agent');
+  assert.equal(pairedB.code, 0);
+  assert.equal((await cliResult('credential', 'get', '--state-dir', agentB)).code, 3);
+  const argsB = ['node', 'approve', pairedB.body.data.pairing_id, '--principal', pairedB.body.data.principal,
+    '--action', CREDENTIAL_GET_ACTION, '--connection', String(f.connected.id), '--wallet', 'wallet_demo', ...ownerFlags];
+  assert.equal((await cliResult(...argsB, '--replace-grant', first.body.data.grant_id)).body.error.code, 'replacement_mismatch');
+  const grantB = await cliResult(...argsB);
+  assert.equal(grantB.code, 0);
+
+  const renewed = await cliResult(...args, '--replace-grant', first.body.data.grant_id);
+  assert.equal(renewed.code, 0, JSON.stringify(renewed.body));
+  assert.notEqual(renewed.body.data.grant_id, first.body.data.grant_id);
+  assert.equal(renewed.body.data.max_calls, 1);
+  assert.equal(renewed.body.data.pairing_id, first.body.data.pairing_id);
+  assert.equal((await cliResult(...args, '--replace-grant', first.body.data.grant_id)).body.error.code, 'replacement_mismatch');
+  await assert.rejects(resourceRequest(context, oldSession, 'GET', '/v1/capabilities'), denied('grant_revoked'));
+  await assert.rejects(operation(f.agent, oldOperation), denied('permission_denied'));
+
+  // Restart the actual listeners and unlock the same vault; neither agent is paired again.
+  await f.node.close();
+  await f.vault.close();
+  const restarted = await startNode(f.store.directory, Number(new URL(f.node.endpoint).port));
+  let unlocked: Awaited<ReturnType<typeof unlockVault>> | undefined;
+  try {
+    const locked = await cliResult('credential', 'get', '--state-dir', f.agent);
+    assert.equal(locked.body.error.code, 'node_locked');
+    assert.equal(locked.code, 3);
+    unlocked = await unlockVault(f.dir, f.recovery, f.store.directory);
+    const status = await cliResult('status', '--live', '--state-dir', f.agent);
+    assert.equal(status.body.data.grant_id, renewed.body.data.grant_id);
+    assert.deepEqual((await cliResult('credential', 'get', '--state-dir', f.agent)).body, { value: SECRET });
+    assert.equal((await cliResult('credential', 'get', '--state-dir', f.agent)).body.error.code, 'budget_exceeded');
+    assert.equal((await cliResult('node', 'revoke', renewed.body.data.grant_id, ...ownerFlags)).code, 0);
+    assert.equal((await cliResult('credential', 'get', '--state-dir', f.agent)).body.error.code, 'grant_revoked');
+    // A separate grant still retrieves the same single stored credential.
+    assert.deepEqual((await cliResult('credential', 'get', '--state-dir', agentB)).body, { value: SECRET });
+    const metadata = await cliResult('credential', 'list', '--wallet', 'wallet_demo', '--vault-dir', f.dir);
+    assert.equal(metadata.body.data.credentials.length, 1);
+    assert.equal(metadata.body.data.credentials[0].id, f.imported.id);
+    assert.deepEqual(readFileSync(join(f.agent, 'pairing.json')), receipt);
+    assert.deepEqual(readFileSync(join(f.agent, 'identity.json')), identity);
+    assert.equal(f.store.db.prepare('SELECT COUNT(*) AS n FROM pairings').get()!.n, 2);
+    assert.equal(f.store.db.prepare('SELECT COUNT(*) AS n FROM grants').get()!.n, 3);
+    assert.deepEqual(f.store.db.prepare('PRAGMA foreign_key_check').all(), []);
+    assertSecretAbsent(SECRET, metadata, first, renewed, grantB, status, traces(f.store), ...walkFiles(f.root).map(path => readFileSync(path)));
+  } finally { await restarted.close(); await unlocked?.close(); }
+});
+
+test('replacement is explicit, same-scope and atomic; expired or revoked credentials need a fresh Owner approval', async t => {
+  const f = await runtime(t);
+  const first = await approve(f);
+  const request = { ...f.owner, pairing_id: f.pairing.pairing_id, principal: f.pairing.principal,
+    action: CREDENTIAL_GET_ACTION, ttl: 300, wallet_id: 'wallet_demo', connection_id: f.connected.id,
+    max_calls: 1, max_amount_minor: 0, replace_grant_id: first.grant_id };
+  const alternate = await vaultRequest(f.dir, 'connection.add', { wallet_id: 'wallet_demo', name: 'Other scope',
+    provider: 'credential', config: { origin: ORIGIN, credential_id: f.imported.id } });
+  await assert.rejects(vaultRequest(f.dir, 'grant.approve', { ...request, connection_id: alternate.id }), denied('replacement_mismatch'));
+  await assert.rejects(vaultRequest(f.dir, 'grant.approve', { ...request, principal: 'wrong-principal' }), denied('principal_mismatch'));
+  await assert.rejects(vaultRequest(f.dir, 'grant.approve', { ...request, action: 'website.session.login' }), error => error instanceof AppError && error.code === 'replacement_mismatch');
+  await assert.rejects(vaultRequest(f.dir, 'grant.approve', { ...request, ttl: 301 }), error => error instanceof AppError && error.code === 'invalid_ttl');
+  await assert.rejects(vaultRequest(f.dir, 'grant.approve', { ...request, max_calls: 2 }), error => error instanceof AppError && error.code === 'invalid_limit');
+  assert.equal(f.store.db.prepare('SELECT revoked_at FROM grants WHERE grant_id=?').get(first.grant_id)!.revoked_at, null);
+
+  // A database failure after revoking the previous grant must roll back the entire replacement.
+  f.store.db.exec("CREATE TRIGGER fail_grant_insert BEFORE INSERT ON grants BEGIN SELECT RAISE(ABORT, 'fixture'); END");
+  await assert.rejects(vaultRequest(f.dir, 'grant.approve', request));
+  f.store.db.exec('DROP TRIGGER fail_grant_insert');
+  assert.equal(f.store.db.prepare('SELECT revoked_at FROM grants WHERE grant_id=?').get(first.grant_id)!.revoked_at, null);
+  assert.equal(f.store.db.prepare('SELECT COUNT(*) AS n FROM grants').get()!.n, 1);
+
+  // Concurrent confirmations of the same previous grant can create only one successor.
+  const outcomes = await Promise.allSettled([vaultRequest(f.dir, 'grant.approve', request), vaultRequest(f.dir, 'grant.approve', request)]);
+  assert.equal(outcomes.filter(result => result.status === 'fulfilled').length, 1);
+  const next = f.store.db.prepare('SELECT grant_id FROM grants WHERE superseded_at IS NULL').get()!.grant_id as string;
+  await vaultRequest(f.dir, 'grant.revoke', { ...f.owner, grant_id: next });
+  await assert.rejects(takeCredential(f.agent), denied('grant_revoked'));
+  const afterRevoke = await vaultRequest(f.dir, 'grant.approve', { ...request, replace_grant_id: next });
+  assert.deepEqual(await takeCredential(f.agent), { value: SECRET });
+  // Explicit Owner approval can also replace an expired grant without re-pairing.
+  f.store.db.prepare('UPDATE grants SET expires_at=0 WHERE grant_id=?').run(afterRevoke.grant_id);
+  await assert.rejects(takeCredential(f.agent), denied('grant_expired'));
+  await vaultRequest(f.dir, 'grant.approve', { ...request, replace_grant_id: afterRevoke.grant_id });
+  assert.deepEqual(await takeCredential(f.agent), { value: SECRET });
+  assertSecretAbsent(SECRET, traces(f.store));
+});
 
 test('without approval a paired agent cannot fetch a credential', async t => {
   const f = await runtime(t);
