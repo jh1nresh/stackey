@@ -16,6 +16,7 @@ import { providerAction, providerSchema } from './providers.js';
 import { ACTION, CONNECTION, initializeDemo, ORDER_SCHEMA } from './orders.js';
 import { approvePairing, initializeOwner, revokeGrant, seconds } from './policy.js';
 
+import { backupStatusFields, defaultRecoveryPath, withBackupStatus } from './backup-state.js';
 import { backupVault, initializeVault, recovery, restoreVault } from './vault.js';
 import { unlockVault } from './vault-session.js';
 import { sessionPath, vaultRequest } from './vault-client.js';
@@ -23,6 +24,7 @@ import { listAudit } from './website-sessions.js';
 
 const help = `Stackey — local agent authorization demo
 
+  stackey setup [--vault-dir .stackey/vault] [--recovery-out .stackey/recovery.json]
   stackey vault init --recovery-out <new-private-file> [--vault-dir .stackey/vault]
   stackey vault unlock --recovery-file <private-file> [--vault-dir ...] [--data-dir ...] [--ttl 900]
   stackey vault status | lock [--vault-dir ...]
@@ -108,19 +110,34 @@ async function main() {
     const result = await onboardLink(vaultDir, textField(values.wallet, 64), sub as 'login' | 'finish' | 'cancel');
     output(envelope(String(result.status), result)); return;
   }
+  if (command === 'setup' && positionals.length === 1) {
+    const recoveryOut = resolve(values['recovery-out'] ?? defaultRecoveryPath(vaultDir));
+    const created = await initializeVault(vaultDir, recoveryOut);
+    output(envelope('ok', withBackupStatus(vaultDir, {
+      ...created,
+      next_step: 'Run stackey backup after writing down the recovery phrase. The phrase is not shown here.',
+    })));
+    return;
+  }
   if (command === 'vault') {
     if (positionals.length !== 2) throw new AppError('invalid_arguments', 'Use vault --help.');
     const subcommand = positionals[1];
-    if (subcommand === 'init') { output(envelope('ok', await initializeVault(vaultDir, resolve(textField(values['recovery-out']))))); return; }
+    if (subcommand === 'init') {
+      output(envelope('ok', withBackupStatus(vaultDir, await initializeVault(vaultDir, resolve(textField(values['recovery-out']))))));
+      return;
+    }
     if (subcommand === 'unlock') {
       const vault = await unlockVault(vaultDir, resolve(textField(values['recovery-file'])), dataDir, values.ttl === undefined ? 900 : Number(values.ttl));
-      output(envelope('ok', { status:'unlocked',vault_id:vault.vaultId,owner:vault.owner,expires_at:vault.expiresAt }));
+      output(envelope('ok', withBackupStatus(vaultDir, { status:'unlocked',vault_id:vault.vaultId,owner:vault.owner,expires_at:vault.expiresAt })));
       const stop = () => { void vault.close().catch(error => { const safe=publicError(error); output(safe.body); process.exitCode=safe.exitCode; }); };
       process.once('SIGINT',stop); process.once('SIGTERM',stop); return;
     }
     if (subcommand === 'status' || subcommand === 'lock') {
-      try { output(envelope('ok', await vaultRequest(vaultDir,subcommand))); }
-      catch(error) { if(error instanceof AppError && error.code==='node_locked') output(envelope('ok',{status:'locked'})); else throw error; }
+      try { output(envelope('ok', withBackupStatus(vaultDir, await vaultRequest(vaultDir,subcommand)))); }
+      catch(error) {
+        if(error instanceof AppError && error.code==='node_locked') output(envelope('ok', withBackupStatus(vaultDir, {status:'locked'})));
+        else throw error;
+      }
       return;
     }
     if (subcommand === 'backup') { output(envelope('ok',backupVault(vaultDir,resolve(textField(values.out))))); return; }
@@ -271,7 +288,10 @@ async function main() {
     output(await connect(invitation, stateDir, values.name ?? 'Agent')); return;
   }
   if (command === 'status' && positionals.length === 1) {
-    output(await (values.live ? liveStatus(stateDir) : localStatus(stateDir))); return;
+    const pairing = await (values.live ? liveStatus(stateDir) : localStatus(stateDir));
+    const backup = backupStatusFields(vaultDir);
+    output(Object.keys(backup).length === 0 ? pairing : { ...pairing, data: { ...record(pairing.data), ...backup } });
+    return;
   }
   if (command === 'capabilities' && positionals.length === 1) {
     output(await capabilities(stateDir)); return;

@@ -8,6 +8,7 @@ import { loadIdentity, readPrivateJson, writePrivateJson } from './identity.js';
 import { initializeDemo } from './orders.js';
 import { approvePairing, initializeOwner, requireGrant, revokeGrant, seconds, verifyGrant } from './policy.js';
 import { Store } from './store.js';
+import { withBackupStatus } from './backup-state.js';
 import { openVault, recovery, VAULT_REQUESTS_CAP, type Connection, type Credential, type VaultRequest } from './vault.js';
 import { connectionConfig, executeProvider, integer, providerParams, supports } from './providers.js';
 import { payMpp, type PaymentContinuation } from './mpp-payment.js';
@@ -81,7 +82,7 @@ export async function unlockVault(dir:string,recoveryFile:string,nodeDir:string,
       args={...args};delete args._node_dir;
     }
     const exact=(keys:string[], optional:string[]=[])=>{if(keys.some(key=>!(key in args)) || Object.keys(args).some(key=>!keys.includes(key)&&!optional.includes(key)))throw new AppError('invalid_parameters','Unexpected vault parameters.');};
-    if(command==='status'){exact([]);return {status:'unlocked',vault_id:vault.vaultId,owner:vault.owner.id,expires_at:expiresAt};}
+    if(command==='status'){exact([]);return withBackupStatus(dir,{status:'unlocked',vault_id:vault.vaultId,owner:vault.owner.id,expires_at:expiresAt});}
     if(command==='lock'){exact([]);setPolicy(false);setImmediate(()=>{void close();});return {status:'locked'};}
     const page=<T extends {id:string}>(rows:T[])=> {
       const after=args.after;let offset=0;
