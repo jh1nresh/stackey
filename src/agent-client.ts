@@ -1,9 +1,11 @@
 import { randomUUID, type webcrypto } from 'node:crypto';
 import { join } from 'node:path';
+import { setTimeout as delay } from 'node:timers/promises';
 import { importJWK, jwtVerify, SignJWT } from 'jose';
 import * as oauth from 'oauth4webapi';
 import { BOOTSTRAP_TYPE, issuer, isUuid, RESPONSE_TYPE } from './access.js';
-import { AppError, digest, endpoint, record, textField } from './contracts.js';
+import { AppError, digest, endpoint, publicErrorMessage, record, textField } from './contracts.js';
+import { CREDENTIAL_GET_ACTION } from './credential-get.js';
 import { loadIdentity, publicKey, readPrivateJson, type Identity } from './identity.js';
 import { providerAction, providerParams } from './providers.js';
 import { ACTION, orderParams } from './orders.js';
@@ -151,4 +153,25 @@ export async function operation(dir: string, id: string) {
   if (!isUuid(id)) throw new AppError('invalid_operation_id', 'Use a UUID operation ID.');
   const context = await agentContext(dir);
   return resourceRequest(context, await session(context), 'GET', '/v1/operations/' + id);
+}
+
+export async function takeCredential(dir: string, operationId: string = randomUUID()): Promise<{ value: string }> {
+  let body = await runOrders(dir, CREDENTIAL_GET_ACTION, {}, operationId);
+  const deadline = Date.now() + 45_000;
+  while (body.status === 'operation_pending') {
+    if (Date.now() > deadline) throw new AppError('operation_result_unknown', `Operation result could not be confirmed. Use operation ${operationId} to check this same request.`, 503, 4, 'result_unknown');
+    await delay(50);
+    body = await operation(dir, operationId);
+  }
+  if (body.status !== 'ok') {
+    const payload = record(record(body.data).result ?? {});
+    const err = payload.error ? record(payload.error) : {};
+    const code = typeof err.code === 'string' ? err.code : 'result_unknown';
+    throw new AppError(code, publicErrorMessage(code), 403, 3, 'permission_denied');
+  }
+  const result = record(record(body.data).result);
+  if (typeof result.value === 'string' && result.value.length > 0 && Object.keys(result).join(',') === 'value') {
+    return { value: result.value };
+  }
+  throw new AppError('already_issued', 'This credential was already issued for this operation.', 403, 3, 'permission_denied');
 }

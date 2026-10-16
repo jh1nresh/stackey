@@ -50,17 +50,19 @@ test('audit_log is append-only, has no secret column, and listAudit pages by cur
     const credential = 'credential_' + randomUUID();
     writeAudit(f.value, { credential_id: credential, agent_id: 'agent_a', origin: 'https://dashboard.example.test', started_at: 100, result: 'authenticated', session_handle_id: 'h1' });
     writeAudit(f.value, { credential_id: credential, agent_id: 'agent_a', origin: 'https://dashboard.example.test', started_at: 101, result: 'revoked' });
+    writeAudit(f.value, { credential_id: credential, agent_id: 'agent_a', origin: 'https://dashboard.example.test', started_at: 102, result: 'issued' });
     const columns = f.value.db.prepare('PRAGMA table_info(audit_log)').all().map(row => String(row.name));
     assert.deepEqual(columns.sort(), ['agent_id', 'credential_id', 'id', 'origin', 'result', 'session_handle_id', 'started_at']);
     assert.throws(() => f.value.db.prepare("UPDATE audit_log SET result='failed'").run());
     assert.throws(() => f.value.db.prepare('DELETE FROM audit_log').run());
     const first = listAudit(f.value);
-    assert.equal(first.entries.length, 2);
+    assert.equal(first.entries.length, 3);
     assert.equal(first.next_cursor, null);
     assert.equal(first.entries[0]!.result, 'authenticated');
     const rest = listAudit(f.value, String(first.entries[0]!.id));
-    assert.equal(rest.entries.length, 1);
+    assert.equal(rest.entries.length, 2);
     assert.equal(rest.entries[0]!.result, 'revoked');
+    assert.equal(rest.entries[1]!.result, 'issued');
     assert.equal(JSON.stringify(first).includes('password'), false);
   } finally { f.close(); }
 });

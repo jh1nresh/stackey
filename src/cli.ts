@@ -10,7 +10,8 @@ import { loadIdentity, privateDirectory, readPrivateJson, writePrivateJson } fro
 import { startNode } from './node.js';
 import { issueInvitation } from './pairing.js';
 import { Store } from './store.js';
-import { capabilities, liveStatus, operation, runOrders } from './agent-client.js';
+import { capabilities, liveStatus, operation, runOrders, takeCredential } from './agent-client.js';
+import { CREDENTIAL_GET_ACTION } from './credential-get.js';
 import { onboardLink } from './link-onboarding.js';
 import { providerAction, providerSchema } from './providers.js';
 import { ACTION, CONNECTION, initializeDemo, ORDER_SCHEMA } from './orders.js';
@@ -40,12 +41,13 @@ const help = `Stackey — local agent authorization demo
   stackey wallet list | create --name <name> [--vault-dir ...] [--request-id <uuid>]
   stackey credential list --wallet <id> [--vault-dir ...]
   stackey credential import --wallet <id> --name <name> --kind password|api_key|private_key|website_login --secret-file <private-JSON-file> [--vault-dir ...] [--request-id <uuid>]
+  stackey credential get [--state-dir ...] [--operation-id ...]
   stackey credential remove <credential-id> [--vault-dir ...]
   stackey credential origin-add <credential-id> --origin https://host [--vault-dir ...] [--data-dir ...]
   stackey credential revoke <credential-id> [--vault-dir ...] [--data-dir ...]
   stackey audit [--data-dir ...] [--after <audit-id>]
   stackey connection list --wallet <id> [--vault-dir ...]
-  stackey connection add --wallet <id> --name <name> --provider demo|supabase|vercel|stripe|website --config-file <private-JSON-file> [--vault-dir ...] [--request-id <uuid>]
+  stackey connection add --wallet <id> --name <name> --provider demo|supabase|vercel|stripe|website|credential --config-file <private-JSON-file> [--vault-dir ...] [--request-id <uuid>]
   stackey link login | finish | cancel --wallet <id> [--vault-dir ...]
   stackey node init [--data-dir .stackey/node]
   stackey node start [--data-dir .stackey/node] [--port 45820]
@@ -69,10 +71,11 @@ const help = `Stackey — local agent authorization demo
   stackey run stripe.payments.read [--cursor ...]
   stackey run stripe.mpp.pay [--operation-id ...]
   stackey run website.session.login [--operation-id ...]
+  stackey run credential.get [--operation-id ...]
   stackey operation <operation-id> [--state-dir ...]
 
 All results are JSON. --json is accepted for compatibility.
-Loopback only. Provider credentials stay in the vault. Stripe adapters are test mode only.
+Loopback only. Credentials stay in the vault. An agent receives a secret only through stackey credential get after a short-lived per-agent grant. Stripe adapters are test mode only.
 Provider operations return operation_pending; poll the same operation ID.
 After Link approval, repeat the same MPP operation ID to resume, never a new one.
 Owner mutations that time out return result_unknown; retry the same --request-id or list first.
@@ -80,6 +83,17 @@ Private state belongs to the execution environment, not an individual Bot.
 `;
 
 const output = (value: unknown) => process.stdout.write(JSON.stringify(value) + '\n');
+function outputAgentBody(body: unknown) {
+  try {
+    const envelope = record(body);
+    const result = record(record(envelope.data).result);
+    if (typeof result.value === 'string' && Object.keys(result).length === 1) {
+      output({ value: result.value });
+      return;
+    }
+  } catch { /* not a one-shot credential handoff */ }
+  output(body);
+}
 
 async function main() {
   if (process.argv.slice(2).includes('--help') || process.argv.length === 2) {
@@ -180,6 +194,11 @@ async function main() {
       rmdirSync(directory); unlinkSync(path); output(envelope('ok',{status:'locked',stale_session_removed:true})); return;
     }
     throw new AppError('unknown_command','Use vault --help.');
+  }
+  if (command === 'credential' && positionals[1] === 'get') {
+    if (positionals.length !== 2) throw new AppError('invalid_arguments', 'Unexpected wallet arguments.');
+    output(await takeCredential(stateDir, values['operation-id']));
+    return;
   }
   if (['wallet','credential','connection'].includes(command ?? '')) {
     const subcommand=positionals[1]; let args:Record<string,unknown>;
@@ -328,11 +347,11 @@ async function main() {
       if (action !== ACTION && !providerAction(action)) throw new AppError('action_not_available', 'Unsupported action.');
       output(envelope('ok', action===ACTION?ORDER_SCHEMA:providerSchema(action))); return;
     }
-    output(await runOrders(stateDir, action, action==='vercel.ai.generate'?{prompt:values.prompt}:action==='stripe.mpp.pay'||action==='website.session.login'?{}:action==='stripe.payments.read'?(values.cursor?{cursor:values.cursor}:{}):{ from: values.from, to: values.to,
+    outputAgentBody(await runOrders(stateDir, action, action==='vercel.ai.generate'?{prompt:values.prompt}:action==='stripe.mpp.pay'||action==='website.session.login'||action===CREDENTIAL_GET_ACTION?{}:action==='stripe.payments.read'?(values.cursor?{cursor:values.cursor}:{}):{ from: values.from, to: values.to,
       ...(values.cursor === undefined ? {} : { cursor: values.cursor }) }, values['operation-id'])); return;
   }
   if (command === 'operation' && positionals.length === 2) {
-    output(await operation(stateDir, textField(positionals[1], 36))); return;
+    outputAgentBody(await operation(stateDir, textField(positionals[1], 36))); return;
   }
   throw new AppError('unknown_command', 'Command is not available; use --help.');
 }

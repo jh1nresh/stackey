@@ -7,8 +7,9 @@ import { websiteOrigin } from './website-login.js';
 export const WEBSITE_SESSION_TTL_DEFAULT = 1800;
 export const WEBSITE_SESSION_TTL_MIN = 60;
 export const WEBSITE_SESSION_TTL_MAX = 1800;
-export const AUDIT_RESULTS = ['authenticated', 'human_required', 'failed', 'refused', 'revoked'] as const;
+export const AUDIT_RESULTS = ['authenticated', 'human_required', 'failed', 'refused', 'revoked', 'issued'] as const;
 export type AuditResult = typeof AUDIT_RESULTS[number];
+const AUDIT_CHECK = "('authenticated','human_required','failed','refused','revoked','issued')";
 
 export function ensureWebsiteLoginTables(store: Store): void {
   store.db.exec(`
@@ -23,7 +24,7 @@ export function ensureWebsiteLoginTables(store: Store): void {
       agent_id TEXT NOT NULL,
       origin TEXT NOT NULL,
       started_at INTEGER NOT NULL,
-      result TEXT NOT NULL CHECK(result IN ('authenticated','human_required','failed','refused','revoked')),
+      result TEXT NOT NULL CHECK(result IN ${AUDIT_CHECK}),
       session_handle_id TEXT
     );
     CREATE TABLE IF NOT EXISTS website_sessions (
@@ -37,6 +38,28 @@ export function ensureWebsiteLoginTables(store: Store): void {
     CREATE TRIGGER IF NOT EXISTS audit_log_no_update BEFORE UPDATE ON audit_log
       BEGIN SELECT RAISE(ABORT, 'audit_log is append-only'); END;
     CREATE TRIGGER IF NOT EXISTS audit_log_no_delete BEFORE DELETE ON audit_log
+      BEGIN SELECT RAISE(ABORT, 'audit_log is append-only'); END;
+  `);
+  const sql = String(store.db.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='audit_log'").get()?.sql ?? '');
+  if (sql.includes("'issued'")) return;
+  store.db.exec(`
+    DROP TRIGGER IF EXISTS audit_log_no_update;
+    DROP TRIGGER IF EXISTS audit_log_no_delete;
+    CREATE TABLE audit_log_new (
+      id TEXT PRIMARY KEY,
+      credential_id TEXT NOT NULL,
+      agent_id TEXT NOT NULL,
+      origin TEXT NOT NULL,
+      started_at INTEGER NOT NULL,
+      result TEXT NOT NULL CHECK(result IN ${AUDIT_CHECK}),
+      session_handle_id TEXT
+    );
+    INSERT INTO audit_log_new SELECT * FROM audit_log;
+    DROP TABLE audit_log;
+    ALTER TABLE audit_log_new RENAME TO audit_log;
+    CREATE TRIGGER audit_log_no_update BEFORE UPDATE ON audit_log
+      BEGIN SELECT RAISE(ABORT, 'audit_log is append-only'); END;
+    CREATE TRIGGER audit_log_no_delete BEFORE DELETE ON audit_log
       BEGIN SELECT RAISE(ABORT, 'audit_log is append-only'); END;
   `);
 }

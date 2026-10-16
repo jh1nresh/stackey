@@ -37,6 +37,17 @@ test('Link spend-request mock rejects flags outside the 0.25.1 CLI schema',()=>{
   assert.throws(()=>assertLinkSpendRequestArgs(['spend-request','request-approval','sr_fixture','--interval','0','--max-attempts','1']));
   assert.throws(()=>assertLinkSpendRequestArgs(['spend-request','create','--interval','0']));
 });
+test('credential connections pin an exact HTTPS origin and accept any vault credential kind',()=>{
+  const password='credential_'+randomUUID();
+  const credData={...data,credentials:[...data.credentials,{id:password,wallet_id:wallet,name:'Site',kind:'password' as const,value:'x'}]};
+  assert.deepEqual(connectionConfig('credential',{origin:'https://dashboard.example.test',credential_id:password},credData,wallet),
+    {origin:'https://dashboard.example.test',credential_id:password});
+  assert.throws(()=>connectionConfig('credential',{origin:'https://dashboard.example.test',credential_id:password},data,wallet));
+  for(const origin of ['http://dashboard.example.test','https://*.example.test','https://evil.test/login','https://127.0.0.1']){
+    assert.throws(()=>connectionConfig('credential',{origin,credential_id:password},credData,wallet));
+  }
+  assert.throws(()=>providerParams('credential.get',{origin:'https://evil.test'}));
+});
 test('website connections pin an HTTPS origin and require a website_login credential',()=>{
   const login='credential_'+randomUUID();
   const websiteData={...data,credentials:[...data.credentials,{id:login,wallet_id:wallet,name:'Site',kind:'website_login' as const,value:'x'}]};

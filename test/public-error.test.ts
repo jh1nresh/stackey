@@ -23,6 +23,12 @@ test('publicError maps AppError codes through a fixed table and never returns th
   assert.equal(generic.httpStatus, 500);
   assert.equal(JSON.stringify(generic).includes(canary), false);
   assert.equal(publicErrorMessage('missing_code'), INTERNAL_ERROR_MESSAGE);
+
+  const ttl = publicError(new AppError('invalid_ttl', 'Grant lifetime must be 60–300 seconds.'));
+  assert.equal(ttl.body.error.message, 'Grant lifetime must be 60–300 seconds.');
+  const noisyTtl = publicError(new AppError('invalid_ttl', `Grant lifetime must be 60–300 seconds. ${canary}`));
+  assert.equal(noisyTtl.body.error.message, PUBLIC_ERROR_MESSAGES.invalid_ttl);
+  assert.equal(JSON.stringify(noisyTtl).includes(canary), false);
 });
 
 test('vaultReply and the scrubber replace the secret and its encodings, not public tokens', () => {

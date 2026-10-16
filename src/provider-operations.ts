@@ -2,12 +2,36 @@ import type { AgentRequest } from './access.js';
 import { AppError, digest, envelope, isPublicErrorCode, publicError, publicErrorMessage, record, textField } from './contracts.js';
 import type { Identity } from './identity.js';
 import { consumeProof, event, type Grant, type ProofTime } from './policy.js';
+import { CREDENTIAL_GET_ACTION } from './credential-get.js';
 import { providerParams, providerSchema } from './providers.js';
 import type { Store } from './store.js';
 import { vaultRequest } from './vault-client.js';
 
 const inFlight = new Set<string>();
 const pending = new Map<string, Promise<void>>();
+const credentialHandoff = new Map<string, string>();
+
+function persistedResult(action: string, result: unknown, key: string): unknown {
+  if (action !== CREDENTIAL_GET_ACTION) return result;
+  const payload = record(result);
+  const value = payload.value;
+  if (typeof value !== 'string' || value.length === 0 || Object.keys(payload).join(',') !== 'value') {
+    throw new AppError('invalid_provider_response', 'Invalid provider state.');
+  }
+  credentialHandoff.set(key, value);
+  return { issued: true };
+}
+
+function agentResult(action: string, state: string, resultJson: unknown, key: string): unknown {
+  const persisted = resultJson ? JSON.parse(String(resultJson)) : null;
+  if (action !== CREDENTIAL_GET_ACTION || state !== 'completed') return persisted;
+  const value = credentialHandoff.get(key);
+  if (typeof value === 'string') {
+    credentialHandoff.delete(key);
+    return { value };
+  }
+  return persisted;
+}
 export async function drainProviderOperations(nodeId: string) { await Promise.all([...pending].filter(([key])=>key.startsWith(nodeId+'/')).map(([,promise])=>promise)); }
 export function operationState(store: Store, id: string) { return store.db.prepare('SELECT * FROM provider_operations WHERE operation_id=?').get(id); }
 export async function dispatchProviderOperation(store: Store, node: Identity, request: AgentRequest, principal: string, proof: ProofTime, check: () => Grant, clock: () => number) {
@@ -40,7 +64,7 @@ export async function dispatchProviderOperation(store: Store, node: Identity, re
         store.db.prepare("UPDATE provider_operations SET state='executing' WHERE operation_id=?").run(operationId); start = true;
       } else {
         const state = existing.state === 'executing' ? inFlight.has(key) ? 'operation_pending' : 'result_unknown' : String(existing.state);
-        return envelope(state === 'completed' ? 'ok' : state, { operation_id: operationId, state, replayed: true, result: existing.result_json ? JSON.parse(String(existing.result_json)) : null });
+        return envelope(state === 'completed' ? 'ok' : state, { operation_id: operationId, state, replayed: true, result: agentResult(String(existing.action), state, existing.result_json, key) });
       }
     } else {
       if (route === 'operation') throw new AppError('operation_not_found', 'Operation was not found.', 404);
@@ -65,16 +89,21 @@ export async function dispatchProviderOperation(store: Store, node: Identity, re
           grant_id: grant.grant_id, principal, action: grant.action, params, operation_id: operationId,
           ...(previous ? { previous } : {}) }));
         if (!['completed', 'approval_required'].includes(String(response.state))) throw new AppError('invalid_provider_response', 'Invalid provider state.');
+        const stored = persistedResult(grant.action, response.result, key);
         store.transaction(() => {
           // Record an already-dispatched outcome even after revoke/lock. Agent
           // reads still require its current grant, so no result leaks after revoke.
-          store.db.prepare('UPDATE provider_operations SET state=?,result_json=? WHERE operation_id=?').run(String(response.state), JSON.stringify(response.result), operationId);
+          // credential.get persists {issued:true} only; the secret stays in memory
+          // until the first completed poll.
+          store.db.prepare('UPDATE provider_operations SET state=?,result_json=? WHERE operation_id=?').run(String(response.state), JSON.stringify(stored), operationId);
           event(store, response.state === 'completed' ? 'operation_completed' : 'payment_approval_required', principal, operationId, clock());
         });
       } catch (error) {
         const code = publicError(error).body.error.code;
-        const refused = grant.action === 'website.session.login' &&
-          ['executor_unavailable', 'origin_not_allowed', 'credential_revoked'].includes(code);
+        const refused = (grant.action === 'website.session.login' &&
+          ['executor_unavailable', 'origin_not_allowed', 'credential_revoked'].includes(code)) ||
+          (grant.action === CREDENTIAL_GET_ACTION &&
+          ['origin_not_allowed', 'credential_revoked', 'credential_not_found'].includes(code));
         store.transaction(() => {
           store.db.prepare('UPDATE provider_operations SET state=?,result_json=? WHERE operation_id=?')
             .run(refused ? 'failed' : 'result_unknown', JSON.stringify({ error: { code } }), operationId);
