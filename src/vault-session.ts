@@ -8,8 +8,9 @@ import { loadIdentity, readPrivateJson, writePrivateJson } from './identity.js';
 import { initializeDemo } from './orders.js';
 import { approvePairing, initializeOwner, requireGrant, revokeGrant, seconds, verifyGrant } from './policy.js';
 import { Store } from './store.js';
-import { withBackupStatus } from './backup-state.js';
-import { openVault, recovery, VAULT_REQUESTS_CAP, type Connection, type Credential, type VaultRequest } from './vault.js';
+import { readBackupState, updateBackupState, withBackupStatus } from './backup-state.js';
+import { keychainFor, loadVaultKey, storeVaultKey } from './keychain.js';
+import { openVault, peekVaultId, recovery, VAULT_REQUESTS_CAP, type Connection, type Credential, type VaultRequest } from './vault.js';
 import { connectionConfig, executeProvider, integer, providerParams, supports } from './providers.js';
 import { payMpp, type PaymentContinuation } from './mpp-payment.js';
 import { sessionPath } from './vault-client.js';
@@ -28,9 +29,32 @@ export function requireBoundVault(store:Store,token:string,vaultId:string):void 
     throw new AppError('node_locked','This vault session is no longer bound to the Node.',403,3,'node_locked');
   }
 }
-export async function unlockVault(dir:string,recoveryFile:string,nodeDir:string,ttl=900,clock=seconds,beforeExecute?:()=>Promise<void>,websiteLogin:WebsiteLoginExecutor=refuseWebsiteLogin):Promise<RunningVault> {
+async function rememberKey(dir:string,vaultId:string,mnemonic:string):Promise<void> {
+  if(await storeVaultKey(dir,vaultId,mnemonic)) {
+    try { updateBackupState(dir,{keychain_unlock:true}); } catch { /* nudge sidecar is best-effort */ }
+  }
+}
+export async function resolveUnlockMnemonic(dir:string,recoveryFile?:string):Promise<string> {
+  if(recoveryFile) {
+    const mnemonic=await recovery(recoveryFile);
+    await rememberKey(dir,peekVaultId(dir),mnemonic);
+    return mnemonic;
+  }
+  const vaultId=peekVaultId(dir);
+  try { return await loadVaultKey(dir,vaultId,keychainFor(dir)); }
+  catch (error) {
+    const state=readBackupState(dir);
+    if(state?.plaintext_recovery && state.recovery_file && existsSync(state.recovery_file)) {
+      const mnemonic=await recovery(state.recovery_file);
+      await rememberKey(dir,vaultId,mnemonic);
+      return mnemonic;
+    }
+    throw error;
+  }
+}
+export async function unlockVault(dir:string,recoveryFile:string|undefined,nodeDir:string,ttl=900,clock=seconds,beforeExecute?:()=>Promise<void>,websiteLogin:WebsiteLoginExecutor=refuseWebsiteLogin):Promise<RunningVault> {
   if(!Number.isInteger(ttl)||ttl<60||ttl>3600)throw new AppError('invalid_ttl','Vault unlock lifetime must be 60–3600 seconds.');
-  const vault=await openVault(dir,await recovery(recoveryFile));
+  const vault=await openVault(dir,await resolveUnlockMnemonic(dir,recoveryFile));
   const pointer=sessionPath(dir);
   if(existsSync(pointer)){vault.close();throw new AppError('session_exists','A vault session or stale session file exists. Lock the active session or use vault recover-session.');}
   const socketDir=mkdtempSync(join(tmpdir(),'stackey-vault-'));chmodSync(socketDir,0o700);

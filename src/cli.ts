@@ -26,7 +26,8 @@ const help = `Stackey — local agent authorization demo
 
   stackey setup [--vault-dir .stackey/vault] [--recovery-out .stackey/recovery.json]
   stackey vault init --recovery-out <new-private-file> [--vault-dir .stackey/vault]
-  stackey vault unlock --recovery-file <private-file> [--vault-dir ...] [--data-dir ...] [--ttl 900]
+  stackey vault unlock [--recovery-file <private-file>] [--vault-dir ...] [--data-dir ...] [--ttl 900]
+      # macOS: Touch ID / Keychain unlock by default; --recovery-file is fallback
   stackey vault status | lock [--vault-dir ...]
   stackey vault recover-session [--vault-dir ...]
   stackey vault backup --out <new-private-file> [--vault-dir ...]
@@ -127,7 +128,8 @@ async function main() {
       return;
     }
     if (subcommand === 'unlock') {
-      const vault = await unlockVault(vaultDir, resolve(textField(values['recovery-file'])), dataDir, values.ttl === undefined ? 900 : Number(values.ttl));
+      const recoveryFile = values['recovery-file'] === undefined ? undefined : resolve(textField(values['recovery-file']));
+      const vault = await unlockVault(vaultDir, recoveryFile, dataDir, values.ttl === undefined ? 900 : Number(values.ttl));
       output(envelope('ok', withBackupStatus(vaultDir, { status:'unlocked',vault_id:vault.vaultId,owner:vault.owner,expires_at:vault.expiresAt })));
       const stop = () => { void vault.close().catch(error => { const safe=publicError(error); output(safe.body); process.exitCode=safe.exitCode; }); };
       process.once('SIGINT',stop); process.once('SIGTERM',stop); return;
