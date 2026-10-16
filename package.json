@@ -13,7 +13,7 @@
   "scripts": {
     "build": "tsc",
     "typecheck": "tsc --noEmit",
-    "test": "npm run build && node --test dist/test/*.test.js",
+    "test": "rm -rf dist && npm run build && node --test dist/test/*.test.js",
     "stackey": "node dist/src/cli.js",
     "test:sandbox": "npm run build && node dist/scripts/sandbox-smoke.js"
   },

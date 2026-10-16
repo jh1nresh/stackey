@@ -80,15 +80,14 @@ function mockLogin(calls: number[], human?: 'email_otp' | 'passkey' | 'captcha' 
 
 test('website origin and username fail closed on open redirects, local targets and control characters', () => {
   assert.equal(websiteOrigin(ORIGIN), ORIGIN);
-  assert.equal(websiteOrigin('https://dashboard.example.test.'), ORIGIN);
-  assert.equal(websiteOrigin('https://dashboard.example.test.').endsWith('.'), false);
   assert.equal(websiteUsername(USER), USER);
   for (const origin of ['http://dashboard.example.test', 'https://127.0.0.1', 'https://localhost',
     'https://localhost.', 'https://foo.localhost.', 'https://[::1]', 'https://[::ffff:127.0.0.1]',
     'https://[0:0:0:0:0:0:0:1]', 'https://127.1', 'https://127.0.1', 'https://0x7f000001',
     'https://2130706433', 'https://Dashboard.Example.TEST', 'https://bücher.example',
     'https://evil.test/login', 'https://user:pass@evil.test', 'https://dashboard.example.test:444',
-    'https://192.168.0.1', 'https://dashboard.example.test/?next=https://evil.test']) {
+    'https://192.168.0.1', 'https://dashboard.example.test/?next=https://evil.test',
+    'https://dashboard.example.test.', 'https://dashboard.example.test..', 'https://example.com..']) {
     assert.throws(() => websiteOrigin(origin), error => error instanceof AppError && error.code === 'invalid_origin');
   }
   assert.throws(() => websiteUsername(' owner@example.test'));

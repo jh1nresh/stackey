@@ -147,7 +147,7 @@ New vault kinds, same storage format:
 | Object | Addition | Notes |
 | --- | --- | --- |
 | Credential | `kind: website_login` | `value` is the password string. List/import return id, wallet, name, kind only |
-| Connection | `provider: website` | `config = { origin, username, credential_id }`. Origin is a fixed HTTPS origin (no path, query, userinfo, port, IP literal, IPv6/`[::1]`, or localhost). Trailing-dot hosts are stored without the trailing dot. List strips `config` |
+| Connection | `provider: website` | `config = { origin, username, credential_id }`. Origin is a fixed HTTPS origin (no path, query, userinfo, port, IP literal, IPv6/`[::1]`, localhost, or trailing-dot hosts such as `example.com.` / `example.com..`). List strips `config` |
 | Action | `website.session.login` | Empty params. Agent cannot pass a URL |
 | Grant | existing scoped grant | `max_calls = 1`, `max_amount_minor = 0`, resource `connection:<id>/website.session.login` |
 

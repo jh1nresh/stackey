@@ -24,11 +24,12 @@ export function websiteOrigin(value: unknown): string {
   const raw = textField(value, 250);
   let url: URL;
   try { url = new URL(raw); } catch { throw new AppError('invalid_origin', 'Use a fixed HTTPS website origin.'); }
-  const host = url.hostname.replace(/\.+$/u, '').toLowerCase();
+  const host = url.hostname.toLowerCase();
   const origin = `https://${host}`;
   if (url.protocol !== 'https:' || url.username || url.password || url.port || url.search || url.hash ||
       (url.pathname !== '/' && url.pathname !== '') || raw !== url.origin ||
       host === 'localhost' || host.endsWith('.localhost') || host.endsWith('.') || origin.endsWith('.') ||
+      url.hostname.endsWith('.') ||
       !host.includes('.') || ipLiteralHost(host, raw) || ipLiteralHost(url.hostname, raw)) {
     throw new AppError('invalid_origin', 'Use a fixed HTTPS website origin.');
   }
