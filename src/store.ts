@@ -92,6 +92,29 @@ export class Store {
       reserved_minor INTEGER NOT NULL, result_json TEXT
     )`);
     ensureWebsiteLoginTables(this);
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS pairing_codes (
+        code TEXT PRIMARY KEY, invitation TEXT NOT NULL, expires_at INTEGER NOT NULL, consumed_at INTEGER
+      );
+      CREATE TABLE IF NOT EXISTS access_requests (
+        request_id TEXT PRIMARY KEY,
+        pairing_id TEXT NOT NULL REFERENCES pairings(pairing_id),
+        principal TEXT NOT NULL,
+        agent_name TEXT NOT NULL,
+        connection_id TEXT NOT NULL,
+        credential_id TEXT NOT NULL,
+        credential_name TEXT NOT NULL,
+        created_at INTEGER NOT NULL,
+        expires_at INTEGER NOT NULL,
+        resolved_at INTEGER,
+        decision TEXT
+      );
+      CREATE TABLE IF NOT EXISTS credential_labels (
+        credential_id TEXT PRIMARY KEY,
+        connection_id TEXT NOT NULL,
+        name TEXT NOT NULL
+      );
+    `);
   }
 
   transaction<T>(work: () => T): T {

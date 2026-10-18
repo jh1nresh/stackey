@@ -145,14 +145,14 @@ test('real CLI agent trial: share one credential, approve each use without re-pa
     '--action', CREDENTIAL_GET_ACTION, '--connection', String(f.connected.id), '--wallet', 'wallet_demo', ...ownerFlags];
   const receipt = readFileSync(join(f.agent, 'pairing.json'));
   const identity = readFileSync(join(f.agent, 'identity.json'));
-  assert.equal((await cliResult('credential', 'get', '--state-dir', f.agent)).code, EXIT_DENIED);
+  assert.equal((await cliResult('credential', 'get', '--no-wait', '--state-dir', f.agent)).code, EXIT_DENIED);
   const first = await cliResult(...args);
   assert.equal(first.code, 0);
   const context = await agentContext(f.agent);
   const oldSession = await session(context);
   const oldOperation = randomUUID();
   assert.deepEqual((await cliResult('credential', 'get', '--state-dir', f.agent, '--operation-id', oldOperation)).body, { value: SECRET });
-  assert.equal((await cliResult('credential', 'get', '--state-dir', f.agent)).body.error.code, 'budget_exceeded');
+  assert.equal((await cliResult('credential', 'get', '--no-wait', '--state-dir', f.agent)).body.error.code, 'budget_exceeded');
   assert.equal((await cliResult(...args)).body.error.code, 'already_approved');
 
   const inviteFile = join(f.root, 'second-invite.json');
@@ -160,7 +160,7 @@ test('real CLI agent trial: share one credential, approve each use without re-pa
   assert.equal((await cliResult('node', 'invite', '--out', inviteFile, '--data-dir', f.store.directory)).code, 0);
   const pairedB = await cliResult('connect', '--invite-file', inviteFile, '--state-dir', agentB, '--name', 'Second CLI Agent');
   assert.equal(pairedB.code, 0);
-  assert.equal((await cliResult('credential', 'get', '--state-dir', agentB)).code, EXIT_DENIED);
+  assert.equal((await cliResult('credential', 'get', '--no-wait', '--state-dir', agentB)).code, EXIT_DENIED);
   const argsB = ['node', 'approve', pairedB.body.data.pairing_id, '--principal', pairedB.body.data.principal,
     '--action', CREDENTIAL_GET_ACTION, '--connection', String(f.connected.id), '--wallet', 'wallet_demo', ...ownerFlags];
   assert.equal((await cliResult(...argsB, '--replace-grant', first.body.data.grant_id)).body.error.code, 'replacement_mismatch');
@@ -189,9 +189,9 @@ test('real CLI agent trial: share one credential, approve each use without re-pa
     const status = await cliResult('status', '--live', '--state-dir', f.agent);
     assert.equal(status.body.data.grant_id, renewed.body.data.grant_id);
     assert.deepEqual((await cliResult('credential', 'get', '--state-dir', f.agent)).body, { value: SECRET });
-    assert.equal((await cliResult('credential', 'get', '--state-dir', f.agent)).body.error.code, 'budget_exceeded');
+    assert.equal((await cliResult('credential', 'get', '--no-wait', '--state-dir', f.agent)).body.error.code, 'budget_exceeded');
     assert.equal((await cliResult('node', 'revoke', renewed.body.data.grant_id, ...ownerFlags)).code, 0);
-    assert.equal((await cliResult('credential', 'get', '--state-dir', f.agent)).body.error.code, 'grant_revoked');
+    assert.equal((await cliResult('credential', 'get', '--no-wait', '--state-dir', f.agent)).body.error.code, 'grant_revoked');
     // A separate grant still retrieves the same single stored credential.
     assert.deepEqual((await cliResult('credential', 'get', '--state-dir', agentB)).body, { value: SECRET });
     const metadata = await cliResult('credential', 'list', '--wallet', 'wallet_demo', '--vault-dir', f.dir);

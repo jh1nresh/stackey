@@ -154,7 +154,7 @@ test('node grants reports spent, replaced, expired and revoked separately, and a
   assert.equal(unpaired.code, EXIT_DENIED);
   assert.ok(results(f.store, 'agent_not_paired').length >= 1);
 
-  const denied = await cliResult('credential', 'get', '--state-dir', f.agent);
+  const denied = await cliResult('credential', 'get', '--no-wait', '--state-dir', f.agent);
   assert.equal(denied.body.error.code, 'permission_denied');
   assert.equal(denied.code, EXIT_DENIED);
   assert.ok(results(f.store, 'permission_denied').some(row => row.agent_id === f.pairing.principal));
@@ -170,7 +170,7 @@ test('node grants reports spent, replaced, expired and revoked separately, and a
   assert.equal(spentList.body.data.grants[0].status, 'spent');
   assert.equal(listedGrantStatus(f.store, f.store.db.prepare('SELECT * FROM grants WHERE grant_id=?').get(first.body.data.grant_id) as any), 'spent');
 
-  const budget = await cliResult('credential', 'get', '--state-dir', f.agent);
+  const budget = await cliResult('credential', 'get', '--no-wait', '--state-dir', f.agent);
   assert.equal(budget.body.error.code, 'budget_exceeded');
   assert.equal(budget.code, EXIT_BUDGET);
   assert.equal(results(f.store, 'budget_exceeded')[0]!.credential_id, f.imported.id);
@@ -189,7 +189,7 @@ test('node grants reports spent, replaced, expired and revoked separately, and a
   const expiredList = await cliResult('node', 'grants', '--data-dir', f.store.directory);
   const expiredRow = expiredList.body.data.grants.find((row: { grant_id: string }) => row.grant_id === replaced.body.data.grant_id);
   assert.equal(expiredRow.status, 'expired');
-  const expired = await cliResult('credential', 'get', '--state-dir', f.agent);
+  const expired = await cliResult('credential', 'get', '--no-wait', '--state-dir', f.agent);
   assert.equal(expired.body.error.code, 'grant_expired');
   assert.equal(expired.code, EXIT_GRANT_EXPIRED);
   assert.ok(results(f.store, 'grant_expired').length >= 1);
@@ -199,7 +199,7 @@ test('node grants reports spent, replaced, expired and revoked separately, and a
   assert.equal((await cliResult('node', 'revoke', fresh.body.data.grant_id, ...ownerFlags)).code, 0);
   const revokedList = await cliResult('node', 'grants', '--data-dir', f.store.directory);
   assert.equal(revokedList.body.data.grants.find((row: { grant_id: string }) => row.grant_id === fresh.body.data.grant_id).status, 'revoked');
-  const revoked = await cliResult('credential', 'get', '--state-dir', f.agent);
+  const revoked = await cliResult('credential', 'get', '--no-wait', '--state-dir', f.agent);
   assert.equal(revoked.body.error.code, 'grant_revoked');
   assert.equal(revoked.code, EXIT_GRANT_REVOKED);
   assert.ok(results(f.store, 'revoked').some(row => row.reason === 'revoke' && row.agent_id === f.pairing.principal));

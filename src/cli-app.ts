@@ -4,12 +4,12 @@ import { tmpdir } from 'node:os';
 import { randomUUID } from 'node:crypto';
 import { parseArgs } from 'node:util';
 import { connect, localStatus } from './client.js';
-import { AppError, envelope, publicError, record, textField, vaultReply } from './contracts.js';
+import { AppError, displayName, envelope, publicError, record, textField, vaultReply } from './contracts.js';
 import { loadIdentity, privateDirectory, readPrivateJson, writePrivateJson } from './identity.js';
 import { startNode } from './node.js';
 import { issueInvitation } from './pairing.js';
 import { Store } from './store.js';
-import { capabilities, liveStatus, operation, runOrders, takeCredential } from './agent-client.js';
+import { capabilities, liveStatus, operation, runOrders, takeCredential, takeCredentialWaiting } from './agent-client.js';
 import { CREDENTIAL_GET_ACTION, CREDENTIAL_GET_TTL_MAX } from './credential-get.js';
 import { onboardLink } from './link-onboarding.js';
 import { providerAction, providerSchema } from './providers.js';
@@ -23,8 +23,20 @@ import { backupVault, initializeVault, recovery, restoreVault } from './vault.js
 import { unlockVault } from './vault-session.js';
 import { sessionPath, vaultRequest } from './vault-client.js';
 import { listAudit, recordAudit } from './website-sessions.js';
+import {
+  isPairingCode, redeemPairingCodeAt, resolveNodeEndpoint, simpleAdd, simpleApprove,
+  simpleInit, simpleOwnerConnect, simpleOwnerStatus, readHiddenSecret,
+} from './simple-wallet.js';
 
-const help = `Stackey — local agent authorization demo
+const help = `Stackey — a 1Password for agents (local)
+
+Quickstart (plain language; pass --json for envelopes):
+  stackey | stackey init     Create the vault, start the local node, unlock
+  stackey add <name>         Store a secret (hidden prompt, or --secret-file)
+  stackey connect            Print a 6-character pairing code for an agent
+  stackey connect <code>     Pair this agent using that code
+  stackey approve [--yes]    Approve a pending one-use credential request
+  stackey status             Credentials, agents, pending requests, recent denials
 
   stackey setup [--vault-dir .stackey/vault] [--recovery-out .stackey/recovery.json]
   stackey backup [--vault-dir .stackey/vault] [--recovery-file <private-file>]
@@ -40,7 +52,7 @@ const help = `Stackey — local agent authorization demo
   stackey wallet list | create --name <name> [--vault-dir ...] [--request-id <uuid>]
   stackey credential list --wallet <id> [--vault-dir ...]
   stackey credential import --wallet <id> --name <name> --kind password|api_key|private_key|website_login --secret-file <private-JSON-file> [--vault-dir ...] [--request-id <uuid>]
-  stackey credential get [--state-dir ...] [--operation-id ...]
+  stackey credential get [--state-dir ...] [--operation-id ...] [--no-wait]
   stackey credential remove <credential-id> [--vault-dir ...]
   stackey credential origin-add <credential-id> --origin https://host [--vault-dir ...] [--data-dir ...]
   stackey credential revoke <credential-id> [--vault-dir ...] [--data-dir ...]
@@ -75,7 +87,7 @@ const help = `Stackey — local agent authorization demo
   stackey run credential.get [--operation-id ...]
   stackey operation <operation-id> [--state-dir ...]
 
-All results are JSON. --json is accepted for compatibility.
+Simple commands print plain language; --json prints the same envelopes as advanced commands.
 Loopback only. Credentials stay in the vault. An agent receives a secret only through stackey credential get after a short-lived per-agent grant. Stripe adapters are test mode only.
 Provider operations return operation_pending; poll the same operation ID.
 After Link approval, repeat the same MPP operation ID to resume, never a new one.
@@ -108,7 +120,7 @@ function outputAgentBody(body: unknown) {
 }
 
 async function main() {
-  if (process.argv.slice(2).includes('--help') || process.argv.length === 2) {
+  if (process.argv.slice(2).includes('--help')) {
     process.stdout.write(help); return;
   }
   let parsed;
@@ -140,6 +152,8 @@ async function main() {
       port: { type: 'string' }, ttl: { type: 'string' }, name: { type: 'string' },
       after: { type: 'string' },
       json: { type: 'boolean' },
+      yes: { type: 'boolean' },
+      'no-wait': { type: 'boolean' },
     }, allowPositionals: true, strict: true });
   } catch { throw new AppError('invalid_arguments', 'Invalid arguments; use --help.'); }
   const { values, positionals } = parsed;
@@ -148,6 +162,25 @@ async function main() {
   const stateDir = resolve(values['state-dir'] ?? '.stackey/agent');
   const ownerDir = resolve(values['owner-dir'] ?? '.stackey/owner');
   const vaultDir = resolve(values['vault-dir'] ?? '.stackey/vault');
+  const port = values.port === undefined ? 45820 : Number(values.port);
+  if (!command || command === 'init') {
+    if (command === 'init' && positionals.length !== 1) throw new AppError('invalid_arguments', 'Unexpected init arguments.');
+    if (!command && positionals.length !== 0) throw new AppError('invalid_arguments', 'Invalid arguments; use --help.');
+    await simpleInit(vaultDir, dataDir, port, values.json === true);
+    return;
+  }
+  if (command === 'add') {
+    if (positionals.length !== 2) throw new AppError('invalid_arguments', 'Use stackey add <name>.');
+    const secret = values['secret-file']
+      ? textField(record(readPrivateJson(resolve(textField(values['secret-file'])))).value, 16384)
+      : await readHiddenSecret();
+    await simpleAdd(vaultDir, dataDir, displayName(positionals[1]), secret, values.json === true, port);
+    return;
+  }
+  if (command === 'approve' && positionals.length === 1) {
+    await simpleApprove(vaultDir, dataDir, { yes: values.yes === true, json: values.json === true, port });
+    return;
+  }
   if (values['replace-grant'] !== undefined &&
       (command !== 'node' || positionals[1] !== 'approve' || !values['vault-dir'] || values.action !== CREDENTIAL_GET_ACTION)) {
     throw new AppError('invalid_arguments', '--replace-grant requires node approve credential.get with --vault-dir.');
@@ -223,7 +256,8 @@ async function main() {
   }
   if (command === 'credential' && positionals[1] === 'get') {
     if (positionals.length !== 2) throw new AppError('invalid_arguments', 'Unexpected wallet arguments.');
-    output(await takeCredential(stateDir, values['operation-id']));
+    const take = values['no-wait'] ? takeCredential : takeCredentialWaiting;
+    output(await take(stateDir, values['operation-id']));
     return;
   }
   if (['wallet','credential','connection'].includes(command ?? '')) {
@@ -360,15 +394,28 @@ async function main() {
     if (positionals.length > 2 || (values['invite-file'] && positionals[1])) {
       throw new AppError('invalid_arguments', 'Supply exactly one invitation source.');
     }
-    const invitation = values['invite-file'] ?
-      textField(record(readPrivateJson(resolve(values['invite-file']))).invitation, 8192) :
-      textField(positionals[1], 8192);
+    if (!values['invite-file'] && !positionals[1]) {
+      await simpleOwnerConnect(vaultDir, dataDir, values.ttl === undefined ? 300 : Number(values.ttl), values.json === true, port);
+      return;
+    }
+    let invitation: string;
+    if (values['invite-file']) {
+      invitation = textField(record(readPrivateJson(resolve(values['invite-file']))).invitation, 8192);
+    } else if (isPairingCode((positionals[1] ?? '').toUpperCase())) {
+      invitation = await redeemPairingCodeAt(await resolveNodeEndpoint(dataDir, port), (positionals[1] ?? '').toUpperCase());
+    } else {
+      invitation = textField(positionals[1], 8192);
+    }
     output(await connect(invitation, stateDir, values.name ?? 'Agent')); return;
   }
   if (command === 'status' && positionals.length === 1) {
-    const pairing = await (values.live ? liveStatus(stateDir) : localStatus(stateDir));
-    const backup = backupStatusFields(vaultDir);
-    output(Object.keys(backup).length === 0 ? pairing : { ...pairing, data: { ...record(pairing.data), ...backup } });
+    if (values.live || values['state-dir'] !== undefined) {
+      const pairing = await (values.live ? liveStatus(stateDir) : localStatus(stateDir));
+      const backup = backupStatusFields(vaultDir);
+      output(Object.keys(backup).length === 0 ? pairing : { ...pairing, data: { ...record(pairing.data), ...backup } });
+      return;
+    }
+    await simpleOwnerStatus(vaultDir, dataDir, values.json === true);
     return;
   }
   if (command === 'capabilities' && positionals.length === 1) {

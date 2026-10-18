@@ -10,6 +10,7 @@ import { consumeProof, denied, event, grantForPairing, proofTime, requireGrant, 
 import { dispatchProviderOperation } from './provider-operations.js';
 import type { Store } from './store.js';
 import { recordAudit } from './website-sessions.js';
+import { createAccessRequest, getAccessRequest, selectTargetFromStore } from './simple-wallet.js';
 
 export const BOOTSTRAP_TYPE = 'stackey-request+jwt';
 export const RESPONSE_TYPE = 'stackey-response+jwt';
@@ -109,6 +110,39 @@ export async function agentAction(store: Store, node: Identity, origin: string, 
     const nonce = randomUUID();
     store.db.prepare('INSERT INTO challenges VALUES (?, ?, NULL)').run(nonce, now + 30);
     return envelope('ok', { nonce, expires_at: now + 30 });
+  }
+  if ((request.path === '/v1/access-requests' && request.method === 'POST') ||
+      (/^\/v1\/access-requests\/[0-9a-f-]{36}$/.test(request.path) && request.method === 'GET')) {
+    const input = await bootstrap(store, node, origin, request, now);
+    if (request.method === 'GET') {
+      const requestId = request.path.split('/').at(-1)!;
+      const row = getAccessRequest(store, requestId, input.principal);
+      const status = row.decision === 'approved' ? 'approved' : row.decision === 'denied' || row.expires_at <= now ? 'denied' : 'approval_required';
+      return store.transaction(() => {
+        consumeProof(store, input.proof, clock());
+        return envelope(status, {
+          request_id: row.request_id, agent: row.agent_name, credential: row.credential_name,
+          decision: row.decision, expires_at: row.expires_at,
+        });
+      });
+    }
+    const body = record(JSON.parse(request.rawBody));
+    if (Object.keys(body).join(',') !== 'pairing_id') throw new AppError('invalid_request', 'Expected one pairing ID.');
+    const pairingId = textField(body.pairing_id, 36);
+    const pairing = store.db.prepare('SELECT * FROM pairings WHERE pairing_id = ? AND principal = ?').get(pairingId, input.principal);
+    if (!pairing) {
+      recordAudit(store, { result: 'permission_denied', reason: 'permission_denied', agent_id: input.principal, started_at: now });
+      denied('permission_denied', 'This pairing does not belong to the requesting key.');
+    }
+    const target = selectTargetFromStore(store, pairingId);
+    return store.transaction(() => {
+      consumeProof(store, input.proof, clock());
+      const row = createAccessRequest(store, pairingId, input.principal, target, clock());
+      return envelope('approval_required', {
+        request_id: row.request_id, agent: row.agent_name, credential: row.credential_name,
+        expires_at: row.expires_at, next_step: 'Ask the owner to run stackey approve.',
+      });
+    });
   }
   if ((request.path === '/v1/sessions' && request.method === 'POST') ||
       (/^\/v1\/pairings\/[0-9a-f-]{36}$/.test(request.path) && request.method === 'GET')) {

@@ -154,7 +154,44 @@ export async function operation(dir: string, id: string) {
   return resourceRequest(context, await session(context), 'GET', '/v1/operations/' + id);
 }
 
+export async function requestAccess(dir: string) {
+  const context = await agentContext(dir);
+  return bootstrapRequest(context, 'POST', '/v1/access-requests', JSON.stringify({ pairing_id: context.pairingId }));
+}
+
+export async function accessRequestStatus(dir: string, requestId: string) {
+  const context = await agentContext(dir);
+  return bootstrapRequest(context, 'GET', '/v1/access-requests/' + requestId);
+}
+
+async function waitForApproval(dir: string, timeoutMs = 120_000): Promise<void> {
+  const pending = await requestAccess(dir);
+  const requestId = textField(record(pending.data).request_id, 36);
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() <= deadline) {
+    const current = await accessRequestStatus(dir, requestId);
+    if (current.status === 'approved') return;
+    if (current.status === 'denied') throw new AppError('permission_denied', 'Permission denied.', 403, 5, 'permission_denied');
+    await delay(1000);
+  }
+  throw new AppError('permission_denied', 'Owner approval is required before requesting a session.', 403, 5, 'permission_denied');
+}
+
 export async function takeCredential(dir: string, operationId: string = randomUUID()): Promise<{ value: string }> {
+  return fetchCredential(dir, operationId);
+}
+
+export async function takeCredentialWaiting(dir: string, operationId: string = randomUUID()): Promise<{ value: string }> {
+  try {
+    return await fetchCredential(dir, operationId);
+  } catch (error) {
+    if (!(error instanceof AppError) || !['permission_denied', 'budget_exceeded', 'grant_expired', 'grant_revoked'].includes(error.code)) throw error;
+    await waitForApproval(dir);
+    return fetchCredential(dir, randomUUID());
+  }
+}
+
+async function fetchCredential(dir: string, operationId: string): Promise<{ value: string }> {
   let body = await runOrders(dir, CREDENTIAL_GET_ACTION, {}, operationId);
   const deadline = Date.now() + 45_000;
   while (body.status === 'operation_pending') {

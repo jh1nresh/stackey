@@ -1,9 +1,10 @@
 import { drainProviderOperations } from './provider-operations.js';
 import { createServer, type IncomingMessage, type Server } from 'node:http';
-import { AppError, digest, envelope, MAX_BODY, publicError, textField } from './contracts.js';
+import { AppError, digest, envelope, MAX_BODY, publicError, record, textField } from './contracts.js';
 import { agentAction, signedResponse } from './access.js';
 import { loadIdentity } from './identity.js';
 import { acceptPairing } from './pairing.js';
+import { redeemPairingCode } from './simple-wallet.js';
 import { Store } from './store.js';
 
 export interface RunningNode {
@@ -46,15 +47,16 @@ export async function startNode(dir: string, port = 45820, clock = () => Math.fl
         throw new AppError('browser_request_denied', 'Browser-origin requests are not supported.', 403, 3, 'permission_denied');
       }
       const pairing = request.method === 'POST' && request.url === '/v1/pairings';
-      const agentRoute = (request.method === 'POST' && ['/v1/challenges', '/v1/sessions', '/v1/operations'].includes(request.url ?? '')) ||
-        (request.method === 'GET' && (request.url === '/v1/capabilities' || /^\/v1\/(pairings|operations)\/[0-9a-f-]{36}$/.test(request.url ?? '')));
-      if (!pairing && !agentRoute) {
+      const pairCode = request.method === 'POST' && request.url === '/v1/pair-codes';
+      const agentRoute = (request.method === 'POST' && ['/v1/challenges', '/v1/sessions', '/v1/operations', '/v1/access-requests'].includes(request.url ?? '')) ||
+        (request.method === 'GET' && (request.url === '/v1/capabilities' || /^\/v1\/(pairings|operations|access-requests)\/[0-9a-f-]{36}$/.test(request.url ?? '')));
+      if (!pairing && !pairCode && !agentRoute) {
         throw new AppError('route_not_available', 'Route is not available.', 404);
       }
-      signedReply = !pairing;
+      signedReply = !pairing && !pairCode;
       const now = clock();
       if (now - windowStart >= 60) { windowStart = now; requests = 0; agentRequests = 0; }
-      const rateLimited = pairing ? ++requests > 30 : ++agentRequests > 120;
+      const rateLimited = pairing || pairCode ? ++requests > 30 : ++agentRequests > 120;
       const rawProof = request.headers['x-stackey-proof'] ?? request.headers.dpop;
       const proof = !signedReply || rawProof === undefined ? '' : textField(rawProof, 8192);
       if (signedReply) requestHash = digest(proof);
@@ -70,6 +72,12 @@ export async function startNode(dir: string, port = 45820, clock = () => Math.fl
         const result = await acceptPairing(store, identity, origin, JSON.parse(rawBody), clock);
         response.writeHead(201);
         response.end(JSON.stringify(envelope('approval_required', { receipt: result })));
+      } else if (pairCode) {
+        const input = record(JSON.parse(rawBody));
+        if (Object.keys(input).join(',') !== 'code') throw new AppError('invalid_request', 'Expected one pairing code.');
+        const invitation = redeemPairingCode(store, textField(input.code, 6), clock());
+        response.writeHead(200);
+        response.end(JSON.stringify(envelope('ok', { invitation })));
       } else {
         const authorization = request.headers.authorization;
         const result = await agentAction(store, identity, origin, {
