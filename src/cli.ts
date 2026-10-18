@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import './runtime-guard.js';
 import { existsSync, lstatSync, unlinkSync, rmdirSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -15,7 +16,7 @@ import { CREDENTIAL_GET_ACTION, CREDENTIAL_GET_TTL_MAX } from './credential-get.
 import { onboardLink } from './link-onboarding.js';
 import { providerAction, providerSchema } from './providers.js';
 import { ACTION, CONNECTION, initializeDemo, ORDER_SCHEMA } from './orders.js';
-import { approvePairing, initializeOwner, revokeGrant, seconds } from './policy.js';
+import { approvePairing, initializeOwner, listedGrantStatus, revokeGrant, seconds, type Grant } from './policy.js';
 
 import { backupStatusFields, defaultRecoveryPath, withBackupStatus } from './backup-state.js';
 import { runPhraseBackup } from './backup-phrase.js';
@@ -23,7 +24,7 @@ import { backupToIcloud, findIcloudBackup, readBackupPassword, restoreFromIcloud
 import { backupVault, initializeVault, recovery, restoreVault } from './vault.js';
 import { unlockVault } from './vault-session.js';
 import { sessionPath, vaultRequest } from './vault-client.js';
-import { listAudit } from './website-sessions.js';
+import { listAudit, recordAudit } from './website-sessions.js';
 
 const help = `Stackey — local agent authorization demo
 
@@ -82,6 +83,17 @@ Provider operations return operation_pending; poll the same operation ID.
 After Link approval, repeat the same MPP operation ID to resume, never a new one.
 Owner mutations that time out return result_unknown; retry the same --request-id or list first.
 Private state belongs to the execution environment, not an individual Bot.
+
+Exit codes:
+  0  success
+  1  unexpected error
+  2  invalid request
+  3  vault locked — unlock with stackey vault unlock
+  4  retry / result unknown
+  5  permission denied
+  6  grant expired
+  7  grant revoked
+  8  grant budget exceeded
 `;
 
 const output = (value: unknown) => process.stdout.write(JSON.stringify(value) + '\n');
@@ -279,10 +291,16 @@ async function main() {
             if (!row) throw new AppError('invalid_cursor', 'Grant cursor was not found.');
             timestamp = row.created_at as number; id = row.grant_id as string;
           }
-          const rows = store.db.prepare(`SELECT grant_id, pairing_id, principal, created_at, expires_at, version, wallet_id, action, connection_id, max_calls, max_amount_minor, superseded_at,
-            CASE WHEN revoked_at IS NOT NULL THEN 'revoked' WHEN expires_at <= ? THEN 'expired' ELSE 'active' END AS status
-            FROM grants WHERE (created_at, grant_id) > (?, ?) ORDER BY created_at, grant_id LIMIT 201`).all(seconds(), timestamp, id);
-          const page = rows.slice(0, 200);
+          const rows = store.db.prepare(`SELECT grant_id, pairing_id, principal, created_at, expires_at, version, wallet_id, action, connection_id, max_calls, max_amount_minor, superseded_at, revoked_at
+            FROM grants WHERE (created_at, grant_id) > (?, ?) ORDER BY created_at, grant_id LIMIT 201`).all(timestamp, id) as unknown as Grant[];
+          const now = seconds();
+          const page = rows.slice(0, 200).map(row => ({
+            grant_id: row.grant_id, pairing_id: row.pairing_id, principal: row.principal,
+            created_at: row.created_at, expires_at: row.expires_at, version: row.version,
+            wallet_id: row.wallet_id, action: row.action, connection_id: row.connection_id,
+            max_calls: row.max_calls, max_amount_minor: row.max_amount_minor,
+            superseded_at: row.superseded_at, status: listedGrantStatus(store, row, now),
+          }));
           output(envelope('ok', { grants: page, next_cursor: rows.length > 200 ? page[199]!.grant_id : null })); return;
         }
         const after = values.after === undefined ? 0 : Number(values.after);
@@ -374,5 +392,19 @@ async function main() {
 }
 
 main().catch(error => {
-  const safe = publicError(error); output(safe.body); process.exitCode = safe.exitCode;
+  const safe = publicError(error);
+  if (safe.body.error.code === 'agent_not_paired') {
+    const flag = process.argv.indexOf('--data-dir');
+    const dataDir = resolve(flag >= 0 ? process.argv[flag + 1] ?? '.stackey/node' : '.stackey/node');
+    try {
+      const store = new Store(dataDir);
+      try {
+        recordAudit(store, {
+          result: 'agent_not_paired', reason: 'agent_not_paired', agent_id: '-',
+          started_at: Math.floor(Date.now() / 1000),
+        });
+      } finally { store.close(); }
+    } catch { /* node directory may not exist yet */ }
+  }
+  output(safe.body); process.exitCode = safe.exitCode;
 });

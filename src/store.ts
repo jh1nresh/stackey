@@ -3,7 +3,7 @@ import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { AppError, invalid } from './contracts.js';
 import { privateDirectory } from './identity.js';
-import { ensureWebsiteLoginTables } from './website-sessions.js';
+import { ensureWebsiteLoginTables, flushQueuedAudit, insertAudit, type AuditEntry } from './website-sessions.js';
 import { ensureRenewableGrants } from './grant-schema.js';
 
 export interface Pairing {
@@ -17,6 +17,8 @@ export interface Pairing {
 
 export class Store {
   readonly db: DatabaseSync;
+  writing = false;
+  queuedAudit: AuditEntry[] = [];
   constructor(readonly directory: string) {
     const dir = directory;
     const path = join(privateDirectory(dir), 'pairings.sqlite');
@@ -93,9 +95,29 @@ export class Store {
   }
 
   transaction<T>(work: () => T): T {
+    this.writing = true;
+    this.queuedAudit = [];
     this.db.exec('BEGIN IMMEDIATE');
-    try { const result = work(); this.db.exec('COMMIT'); return result; }
-    catch (error) { this.db.exec('ROLLBACK'); throw error; }
+    try {
+      const result = work();
+      flushQueuedAudit(this);
+      this.db.exec('COMMIT');
+      this.writing = false;
+      return result;
+    } catch (error) {
+      const pending = this.queuedAudit;
+      this.queuedAudit = [];
+      this.db.exec('ROLLBACK');
+      this.writing = false;
+      if (pending.length) {
+        try {
+          this.db.exec('BEGIN IMMEDIATE');
+          for (const entry of pending) insertAudit(this, entry);
+          this.db.exec('COMMIT');
+        } catch { try { this.db.exec('ROLLBACK'); } catch { /* keep the original error */ } }
+      }
+      throw error;
+    }
   }
 
   getEndpoint(): string {

@@ -4,7 +4,7 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { importJWK, jwtVerify, SignJWT } from 'jose';
 import * as oauth from 'oauth4webapi';
 import { BOOTSTRAP_TYPE, issuer, isUuid, RESPONSE_TYPE } from './access.js';
-import { AppError, digest, endpoint, publicErrorMessage, record, textField } from './contracts.js';
+import { AppError, digest, endpoint, exitCodeFor, publicErrorMessage, record, textField } from './contracts.js';
 import { CREDENTIAL_GET_ACTION } from './credential-get.js';
 import { loadIdentity, publicKey, readPrivateJson, type Identity } from './identity.js';
 import { providerAction, providerParams } from './providers.js';
@@ -49,9 +49,8 @@ export async function verifiedResponse(context: AgentContext, response: Response
   if (!response.ok) {
     const error = record(body.error);
     const status = textField(body.status, 64);
-    throw new AppError(textField(error.code, 64), textField(error.message, 512), response.status,
-      status === 'permission_denied' || status === 'grant_expired' || status === 'grant_revoked' || status === 'node_locked' ? 3 :
-        status === 'rate_limited' ? 4 : 2, status);
+    const code = textField(error.code, 64);
+    throw new AppError(code, textField(error.message, 512), response.status, exitCodeFor(code, status === 'rate_limited' ? 4 : 2), status);
   }
   return body;
 }
@@ -167,11 +166,11 @@ export async function takeCredential(dir: string, operationId: string = randomUU
     const payload = record(record(body.data).result ?? {});
     const err = payload.error ? record(payload.error) : {};
     const code = typeof err.code === 'string' ? err.code : 'result_unknown';
-    throw new AppError(code, publicErrorMessage(code), 403, 3, 'permission_denied');
+    throw new AppError(code, publicErrorMessage(code), 403, exitCodeFor(code), 'permission_denied');
   }
   const result = record(record(body.data).result);
   if (typeof result.value === 'string' && result.value.length > 0 && Object.keys(result).join(',') === 'value') {
     return { value: result.value };
   }
-  throw new AppError('already_issued', 'This credential was already issued for this operation.', 403, 3, 'permission_denied');
+  throw new AppError('already_issued', 'This credential was already issued for this operation.', 403, exitCodeFor('already_issued'), 'permission_denied');
 }

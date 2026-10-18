@@ -6,6 +6,7 @@ import { CREDENTIAL_GET_ACTION } from './credential-get.js';
 import { providerParams, providerSchema } from './providers.js';
 import type { Store } from './store.js';
 import { vaultRequest } from './vault-client.js';
+import { credentialForConnection, recordAudit } from './website-sessions.js';
 
 const inFlight = new Set<string>();
 const pending = new Map<string, Promise<void>>();
@@ -72,7 +73,13 @@ export async function dispatchProviderOperation(store: Store, node: Identity, re
       // pending operations retain their reservation; no automatic refund or retry.
       const usage = store.db.prepare("SELECT COUNT(*) AS calls, COALESCE(SUM(reserved_minor),0) AS amount FROM provider_operations WHERE grant_id=? AND state!='failed'").get(current.grant_id)!;
       const reservation = current.action === 'stripe.mpp.pay' ? current.max_amount_minor : 0;
-      if (Number(usage.calls) >= current.max_calls || Number(usage.amount) + reservation > current.max_amount_minor) throw new AppError('budget_exceeded', 'Grant call or payment budget is exhausted.', 403, 3, 'permission_denied');
+      if (Number(usage.calls) >= current.max_calls || Number(usage.amount) + reservation > current.max_amount_minor) {
+        recordAudit(store, {
+          result: 'budget_exceeded', reason: 'budget_exceeded', agent_id: principal,
+          credential_id: credentialForConnection(store, current.connection_id), origin: '-', started_at: clock(),
+        });
+        throw new AppError('budget_exceeded', 'Grant call or payment budget is exhausted.', 403, 8, 'permission_denied');
+      }
       store.db.prepare('INSERT INTO provider_operations VALUES (?,?,?,?,?,?,?,?,NULL)').run(operationId, current.grant_id, principal, inputHash, current.action, clock(), 'executing', reservation);
       event(store, 'operation_dispatched', principal, operationId, clock()); start = true;
     }

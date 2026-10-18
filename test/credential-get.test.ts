@@ -8,7 +8,7 @@ import { join, resolve } from 'node:path';
 import { test, type TestContext } from 'node:test';
 import { agentContext, capabilities, operation, resourceRequest, runOrders, session, takeCredential } from '../src/agent-client.js';
 import { connect } from '../src/client.js';
-import { AppError } from '../src/contracts.js';
+import { AppError, EXIT_DENIED, EXIT_LOCKED, exitCodeFor } from '../src/contracts.js';
 import { CREDENTIAL_GET_ACTION } from '../src/credential-get.js';
 import { secretForms } from '../src/redact.js';
 import { loadIdentity } from '../src/identity.js';
@@ -24,7 +24,8 @@ import { originAllowed } from '../src/website-sessions.js';
 const cli = resolve('dist/src/cli.js');
 const SECRET = 'fixture-credential-get-DO-NOT-LEAK';
 const ORIGIN = 'https://dashboard.example.test';
-const denied = (code?: string) => (error: unknown) => error instanceof AppError && error.exitCode === 3 && (!code || error.code === code);
+const denied = (code?: string) => (error: unknown) =>
+  error instanceof AppError && (!code || error.code === code) && error.exitCode === exitCodeFor(error.code, error.exitCode);
 
 function captureProcessIo() {
   const chunks: string[] = [];
@@ -132,7 +133,7 @@ test('CLI treats a leading-dash fingerprint as a value and still verifies the pr
     '--principal', '-' + 'a'.repeat(42), '--action', CREDENTIAL_GET_ACTION,
     '--connection', String(f.connected.id), '--wallet', 'wallet_demo',
     '--vault-dir', f.dir, '--data-dir', f.store.directory);
-  assert.equal(result.code, 3);
+  assert.equal(result.code, EXIT_DENIED);
   assert.equal(result.body.error.code, 'principal_mismatch');
   assert.equal(f.store.db.prepare('SELECT COUNT(*) AS n FROM grants').get()!.n, 0);
 });
@@ -144,7 +145,7 @@ test('real CLI agent trial: share one credential, approve each use without re-pa
     '--action', CREDENTIAL_GET_ACTION, '--connection', String(f.connected.id), '--wallet', 'wallet_demo', ...ownerFlags];
   const receipt = readFileSync(join(f.agent, 'pairing.json'));
   const identity = readFileSync(join(f.agent, 'identity.json'));
-  assert.equal((await cliResult('credential', 'get', '--state-dir', f.agent)).code, 3);
+  assert.equal((await cliResult('credential', 'get', '--state-dir', f.agent)).code, EXIT_DENIED);
   const first = await cliResult(...args);
   assert.equal(first.code, 0);
   const context = await agentContext(f.agent);
@@ -159,7 +160,7 @@ test('real CLI agent trial: share one credential, approve each use without re-pa
   assert.equal((await cliResult('node', 'invite', '--out', inviteFile, '--data-dir', f.store.directory)).code, 0);
   const pairedB = await cliResult('connect', '--invite-file', inviteFile, '--state-dir', agentB, '--name', 'Second CLI Agent');
   assert.equal(pairedB.code, 0);
-  assert.equal((await cliResult('credential', 'get', '--state-dir', agentB)).code, 3);
+  assert.equal((await cliResult('credential', 'get', '--state-dir', agentB)).code, EXIT_DENIED);
   const argsB = ['node', 'approve', pairedB.body.data.pairing_id, '--principal', pairedB.body.data.principal,
     '--action', CREDENTIAL_GET_ACTION, '--connection', String(f.connected.id), '--wallet', 'wallet_demo', ...ownerFlags];
   assert.equal((await cliResult(...argsB, '--replace-grant', first.body.data.grant_id)).body.error.code, 'replacement_mismatch');
@@ -183,7 +184,7 @@ test('real CLI agent trial: share one credential, approve each use without re-pa
   try {
     const locked = await cliResult('credential', 'get', '--state-dir', f.agent);
     assert.equal(locked.body.error.code, 'node_locked');
-    assert.equal(locked.code, 3);
+    assert.equal(locked.code, EXIT_LOCKED);
     unlocked = await unlockVault(f.dir, f.recovery, f.store.directory);
     const status = await cliResult('status', '--live', '--state-dir', f.agent);
     assert.equal(status.body.data.grant_id, renewed.body.data.grant_id);
@@ -284,7 +285,7 @@ test('approved single-use credential.get returns the secret once, persists issue
   const row = f.store.db.prepare('SELECT state, result_json FROM provider_operations WHERE operation_id=?').get(id);
   assert.equal(row!.state, 'completed');
   assert.deepEqual(JSON.parse(String(row!.result_json)), { issued: true });
-  const audit = f.store.db.prepare('SELECT * FROM audit_log').all() as Record<string, unknown>[];
+  const audit = f.store.db.prepare("SELECT * FROM audit_log WHERE result='issued'").all() as Record<string, unknown>[];
   assert.equal(audit.length, 1);
   assert.equal(audit[0]!.result, 'issued');
   assert.equal(audit[0]!.origin, ORIGIN);
@@ -315,7 +316,7 @@ test('allowlist mismatch fails closed, writes refused, and does not consume the 
   const row = f.store.db.prepare('SELECT state, result_json FROM provider_operations WHERE operation_id=?').get(id);
   assert.equal(row!.state, 'failed');
   assert.deepEqual(JSON.parse(String(row!.result_json)), { error: { code: 'origin_not_allowed' } });
-  const audit = f.store.db.prepare('SELECT * FROM audit_log').all() as Record<string, unknown>[];
+  const audit = f.store.db.prepare("SELECT * FROM audit_log WHERE result='refused'").all() as Record<string, unknown>[];
   assert.equal(audit[0]!.result, 'refused');
   await vaultRequest(f.dir, 'credential.origin.add', { ...f.owner, credential_id: f.imported.id, origin: ORIGIN });
   const retry = randomUUID();

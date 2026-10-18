@@ -210,8 +210,11 @@ stackey operation <operation-id> --json
 | --- | --- |
 | `ok` | exit 0，回傳允許的結果 |
 | `pending`／`approval_required` | exit 0，回傳 operation ID、狀態、有限等待／查詢方法 |
-| `permission_denied`／`grant_expired`／`grant_revoked` | exit 3，停止該操作，需人授權才能改變 |
-| `connection_requires_auth`／`node_locked` | exit 3，通知人處理後查詢／續做 |
+| `node_locked`／`connection_requires_auth` | exit 3，解鎖 vault 後查詢／續做 |
+| `permission_denied` | exit 5，停止該操作，需人授權才能改變 |
+| `grant_expired` | exit 6，Grant 已過期，需人重新核准 |
+| `grant_revoked` | exit 7，Owner 已撤銷，需人重新核准 |
+| `budget_exceeded` | exit 8，Grant 次數或金額已用盡 |
 | `node_unreachable` | exit 4，可有限重試狀態或無副作用請求 |
 | `result_unknown` | exit 4，查詢原 operation／對帳，禁止盲目重送 |
 | `invalid_request` | exit 2，依 schema 修正參數，不執行副作用 |
