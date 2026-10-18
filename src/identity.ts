@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { closeSync, existsSync, fsyncSync, lstatSync, mkdirSync, openSync, readFileSync, renameSync, unlinkSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { calculateJwkThumbprint, exportJWK, generateKeyPair, importJWK, type JWK } from 'jose';
-import { AppError, invalid, record, textField } from './contracts.js';
+import { AppError, EXIT_DENIED, invalid, record, textField } from './contracts.js';
 
 export interface Identity {
   id: string;
@@ -76,8 +76,13 @@ export async function loadIdentity(dir: string, kind: 'node' | 'agent' | 'owner'
   const path = join(safeDir, 'identity.json');
   const algorithm = kind === 'agent' ? 'ES256' : 'EdDSA';
   if (!existsSync(path)) {
-    if (!create) throw new AppError(kind === 'agent' ? 'agent_not_paired' : kind === 'owner' ? 'owner_not_initialized' : 'node_not_initialized',
-      kind === 'agent' ? 'Connect this agent state directory first.' : kind === 'owner' ? 'Initialize the owner signer first.' : 'Initialize the Node first.');
+    if (!create) {
+      if (kind === 'agent') {
+        throw new AppError('agent_not_paired', 'Connect this agent state directory first.', 403, EXIT_DENIED, 'agent_not_paired');
+      }
+      throw new AppError(kind === 'owner' ? 'owner_not_initialized' : 'node_not_initialized',
+        kind === 'owner' ? 'Initialize the owner signer first.' : 'Initialize the Node first.');
+    }
     const identity = await createIdentity(algorithm);
     writePrivateJson(path, identity);
     return identity;

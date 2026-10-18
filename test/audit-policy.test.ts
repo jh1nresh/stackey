@@ -1,9 +1,10 @@
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { once } from 'node:events';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { test, type TestContext } from 'node:test';
 import { takeCredential } from '../src/agent-client.js';
 import { connect } from '../src/client.js';
@@ -78,6 +79,9 @@ test('exitCodeFor keeps 3 for vault lock only and splits grant denials', () => {
   assert.equal(publicError(new AppError('grant_expired', 'late', 403, 3, 'grant_expired')).exitCode, EXIT_GRANT_EXPIRED);
   assert.equal(publicError(new AppError('grant_revoked', 'stopped', 403, 3, 'grant_revoked')).exitCode, EXIT_GRANT_REVOKED);
   assert.equal(publicError(new AppError('permission_denied', 'no', 403, 3, 'permission_denied')).exitCode, EXIT_DENIED);
+  const unpaired = publicError(new AppError('agent_not_paired', 'Connect this agent state directory first.', 403, EXIT_DENIED, 'agent_not_paired'));
+  assert.equal(unpaired.exitCode, EXIT_DENIED);
+  assert.equal(unpaired.body.status, 'agent_not_paired');
 });
 
 test('grantLifecycle distinguishes spent, replaced, expired and owner-revoked', () => {
@@ -93,9 +97,33 @@ test('runtime guard requires Node 22.18 and recognizes the SQLite experimental w
   assert.equal(nodeMeetsRequirement('22.18.0'), true);
   assert.equal(nodeMeetsRequirement('22.17.9'), false);
   assert.equal(nodeMeetsRequirement('20.19.0'), false);
+  assert.equal(nodeMeetsRequirement('20.19.2'), false);
+  assert.equal(nodeMeetsRequirement('22.12.0'), false);
   assert.equal(nodeMeetsRequirement('23.0.0'), true);
   assert.equal(isSqliteExperimentalWarning({ name: 'ExperimentalWarning', message: 'SQLite is an experimental feature and might change at any time' }), true);
   assert.equal(isSqliteExperimentalWarning({ name: 'ExperimentalWarning', message: 'Other experiment' }), false);
+});
+
+test('CLI entry checks Node version before loading node:sqlite', async () => {
+  const source = readFileSync(cli, 'utf8');
+  assert.equal(source.includes('node:sqlite'), false);
+  assert.match(source, /cli-app\.js/);
+  assert.match(source, /installRuntimeGuards|runtime-guard/);
+  const script = `
+    Object.defineProperty(process, 'versions', { value: { ...process.versions, node: '20.19.2' } });
+    await import(${JSON.stringify(pathToFileURL(cli).href)});
+    process.stdout.write('CLI_STARTED\\n');
+  `;
+  const child = spawn(process.execPath, ['--input-type=module', '-e', script], { env: process.env });
+  let stdout = ''; let stderr = '';
+  child.stdout.on('data', chunk => { stdout += chunk; });
+  child.stderr.on('data', chunk => { stderr += chunk; });
+  const [code] = await once(child, 'close');
+  assert.equal(code, 1);
+  assert.match(stderr, /requires Node\.js 22\.18/);
+  assert.match(stderr, /20\.19\.2/);
+  assert.equal(/ERR_UNKNOWN_BUILTIN_MODULE|Cannot find module 'node:sqlite'/i.test(stderr + stdout), false);
+  assert.equal(stdout.includes('CLI_STARTED'), false);
 });
 
 test('CLI help does not print the SQLite experimental warning', async () => {
@@ -122,6 +150,7 @@ test('node grants reports spent, replaced, expired and revoked separately, and a
 
   const unpaired = await cliResult('credential', 'get', '--state-dir', join(f.root, 'missing-agent'), '--data-dir', f.store.directory);
   assert.equal(unpaired.body.error.code, 'agent_not_paired');
+  assert.equal(unpaired.body.status, 'agent_not_paired');
   assert.equal(unpaired.code, EXIT_DENIED);
   assert.ok(results(f.store, 'agent_not_paired').length >= 1);
 
@@ -226,6 +255,23 @@ test('audit_log migration adds reason and new result values without dropping his
     });
     assert.throws(() => store.db.prepare("UPDATE audit_log SET result='failed'").run());
   } finally { store.close(); rmSync(dir, { recursive: true }); }
+});
+
+test('unpaired credential get fails without creating a node database in cwd', async t => {
+  const root = mkdtempSync(join(tmpdir(), 'stackey-unpaired-cwd-'));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const child = spawn(process.execPath, [cli, 'credential', 'get', '--state-dir', join(root, 'missing-agent')], {
+    cwd: root, env: process.env,
+  });
+  let stdout = '';
+  child.stdout.on('data', chunk => { stdout += chunk; });
+  const [code] = await once(child, 'close');
+  const body = JSON.parse(stdout);
+  assert.equal(code, EXIT_DENIED);
+  assert.equal(body.error.code, 'agent_not_paired');
+  assert.equal(body.status, 'agent_not_paired');
+  assert.equal(existsSync(join(root, '.stackey')), false);
+  assert.equal(existsSync(join(root, '.stackey', 'node', 'pairings.sqlite')), false);
 });
 
 test('spent grant fetch still never writes the secret into audit rows', async t => {
