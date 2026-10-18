@@ -29,17 +29,21 @@ Paste that line into the agent (or run it in the agent’s environment):
 ```bash
 node dist/src/cli.js connect ABC123 --state-dir .stackey/agent
 node dist/src/cli.js credential get --state-dir .stackey/agent
+# blocks until the owner approves (up to two minutes)
+# spent/expired/revoked grants also wait for a new approval
+# --no-wait returns immediately: exit 5 not approved, 6 expired, 7 revoked, 8 spent
+# exit 3 means the vault is locked
 ```
 
 On the owner side, approve the one-use request (no grant IDs):
 
 ```bash
 node dist/src/cli.js approve
-# Agent Codex wants GITHUB_TOKEN once — approve? [y/N]
+# agent-ABC123 wants GITHUB_TOKEN once — approve? [y/N]
 node dist/src/cli.js status
 ```
 
-`status` lists credentials, connected agents, pending requests, recent denials, and the backup reminder. The recovery phrase is saved privately; run `stackey backup` when you can — you do not write it down up front.
+`status` lists credentials, connected agents, pending requests, recent denials (plain language, local time), and the backup reminder. The recovery phrase is saved privately; run `stackey backup` when you can — you do not write it down up front.
 
 Allowlisting, one-use grants, TTL, revocation, audit, and encryption at rest stay in force. Advanced commands (`node invite`, `node approve --replace-grant`, fingerprints) keep working for scripts that already use them.
 
@@ -62,17 +66,21 @@ node dist/src/cli.js connect
 ```bash
 node dist/src/cli.js connect ABC123 --state-dir .stackey/agent
 node dist/src/cli.js credential get --state-dir .stackey/agent
+# 預設會等到 Owner 核准（最多約兩分鐘）
+# 已用完／過期／撤銷的 Grant 也會再送一次核准請求
+# --no-wait 立即結束：exit 5 未核准、6 過期、7 撤銷、8 已用完
+# exit 3 表示 vault 已上鎖
 ```
 
 Owner 核准一次性取用（不必查 Grant ID）：
 
 ```bash
 node dist/src/cli.js approve
-# Agent Codex wants GITHUB_TOKEN once — approve? [y/N]
+# agent-ABC123 wants GITHUB_TOKEN once — approve? [y/N]
 node dist/src/cli.js status
 ```
 
-`status` 會用白話列出憑證、已連線 agent、待核准請求、最近拒絕，以及備份提醒。助記詞先存在本機私有檔，之後再跑 `stackey backup`，一開始不必抄寫。
+`status` 會用白話列出憑證、已連線 agent、待核准請求、最近拒絕（本地時間），以及備份提醒。助記詞先存在本機私有檔，之後再跑 `stackey backup`，一開始不必抄寫。
 
 允許清單、一次性 Grant、TTL、撤銷、稽核與靜態加密仍然有效。進階命令（`node invite`、`node approve --replace-grant`、指紋）維持可用。
 

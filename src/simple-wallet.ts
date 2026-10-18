@@ -97,7 +97,7 @@ function pairingName(store: Store, pairingId: string, principal: string): string
 
 export function createAccessRequest(store: Store, pairingId: string, principal: string, connection: {
   connection_id: string; credential_id: string; credential_name: string;
-}, now = seconds(), ttl = 300): AccessRequestRow {
+}, now = seconds(), ttl = 120): AccessRequestRow {
   const open = store.db.prepare(`SELECT * FROM access_requests WHERE pairing_id=? AND principal=? AND resolved_at IS NULL AND expires_at > ? ORDER BY created_at DESC`).get(pairingId, principal, now) as AccessRequestRow | undefined;
   if (open) return open;
   const row: AccessRequestRow = {
@@ -394,7 +394,7 @@ export async function simpleApprove(vaultDir: string, dataDir: string, options: 
     const pending = listPendingAccessRequests(store);
     if (pending.length === 0) throw new AppError('no_pending_request', 'There is no pending agent request to approve.');
     const request = pending[0]!;
-    const prompt = `Agent ${request.agent_name} wants ${request.credential_name} once — approve? [y/N] `;
+    const prompt = `${request.agent_name} wants ${request.credential_name} once — approve? [y/N] `;
     let approved = options.yes === true;
     if (!approved && !options.json) {
       if (options.input) {
@@ -404,7 +404,7 @@ export async function simpleApprove(vaultDir: string, dataDir: string, options: 
       } else {
         process.stdout.write([
           prompt.trim(),
-          ...pending.slice(1).map(row => `Agent ${row.agent_name} wants ${row.credential_name} once`),
+          ...pending.slice(1).map(row => `${row.agent_name} wants ${row.credential_name} once`),
           'Confirm the first request with stackey approve --yes.',
         ].join('\n') + '\n');
         return;
@@ -451,6 +451,16 @@ async function readYes(input: NodeJS.ReadableStream, prompt: string): Promise<bo
   } finally { rl.close(); }
 }
 
+function denialInPlainWords(result: string): string {
+  if (result === 'budget_exceeded') return 'grant was spent';
+  if (result === 'grant_expired') return 'grant expired';
+  if (result === 'grant_revoked') return 'grant was revoked';
+  if (result === 'permission_denied') return 'permission denied';
+  if (result === 'agent_not_paired') return 'agent is not paired';
+  if (result === 'node_locked') return 'vault was locked';
+  return result;
+}
+
 export async function simpleOwnerStatus(vaultDir: string, dataDir: string, json = false): Promise<void> {
   let unlocked = false;
   try { await vaultRequest(vaultDir, 'status'); unlocked = true; } catch { unlocked = false; }
@@ -464,13 +474,13 @@ export async function simpleOwnerStatus(vaultDir: string, dataDir: string, json 
   }
   const store = existsSync(join(dataDir, 'pairings.sqlite')) ? new Store(dataDir) : undefined;
   try {
+    const now = seconds();
     const agents = store ? store.listPairings().pairings.map(row => ({ name: row.display_name, pairing_id: row.pairing_id, principal: row.principal })) : [];
-    const pending = store ? listPendingAccessRequests(store) : [];
+    const pending = store ? listPendingAccessRequests(store, now) : [];
     const denials = store ? listAudit(store).entries.filter(row =>
       ['budget_exceeded', 'grant_expired', 'grant_revoked', 'permission_denied', 'agent_not_paired', 'node_locked'].includes(String(row.result))
     ).slice(-5) : [];
     const grants = store ? store.db.prepare('SELECT * FROM grants').all() as unknown as Grant[] : [];
-    const now = seconds();
     const data = {
       vault: unlocked ? 'unlocked' : 'locked',
       backup_status: backup.backup_status ?? 'not_backed_up',
@@ -486,9 +496,20 @@ export async function simpleOwnerStatus(vaultDir: string, dataDir: string, json 
         };
       }),
       pending_requests: pending.map(row => ({ agent: row.agent_name, credential: row.credential_name })),
-      recent_denials: denials.map(row => ({ agent: row.agent_id, reason: row.reason ?? row.result, at: row.started_at })),
+      recent_denials: denials.map(row => ({
+        agent: row.agent_id,
+        reason: denialInPlainWords(String(row.reason ?? row.result)),
+        at: typeof row.started_at === 'number' ? new Date(row.started_at * 1000).toLocaleString() : String(row.started_at),
+      })),
     };
     if (json) { process.stdout.write(JSON.stringify(envelope('ok', data)) + '\n'); return; }
+    if (!unlocked) {
+      process.stdout.write([
+        'Vault locked — run `stackey` to unlock',
+        data.backup_nudge ?? NOT_BACKED_UP_NUDGE,
+      ].join('\n') + '\n');
+      return;
+    }
     const lines = [
       `Vault is ${data.vault}.`,
       data.backup_nudge ?? (data.backup_status === 'backed_up' ? 'Backup is recorded.' : NOT_BACKED_UP_NUDGE),
@@ -504,7 +525,7 @@ export async function simpleOwnerStatus(vaultDir: string, dataDir: string, json 
     ];
     if (data.recent_denials.length) {
       lines.push('', 'Recent denials');
-      for (const row of data.recent_denials) lines.push(`  ${String(row.reason)} (${row.at})`);
+      for (const row of data.recent_denials) lines.push(`  ${row.reason} (${row.at})`);
     }
     process.stdout.write(lines.join('\n') + '\n');
   } finally { store?.close(); }

@@ -53,6 +53,7 @@ Quickstart (plain language; pass --json for envelopes):
   stackey credential list --wallet <id> [--vault-dir ...]
   stackey credential import --wallet <id> --name <name> --kind password|api_key|private_key|website_login --secret-file <private-JSON-file> [--vault-dir ...] [--request-id <uuid>]
   stackey credential get [--state-dir ...] [--operation-id ...] [--no-wait]
+      # waits for owner approval by default; --no-wait returns 5/6/7/8 immediately
   stackey credential remove <credential-id> [--vault-dir ...]
   stackey credential origin-add <credential-id> --origin https://host [--vault-dir ...] [--data-dir ...]
   stackey credential revoke <credential-id> [--vault-dir ...] [--data-dir ...]
@@ -70,8 +71,8 @@ Quickstart (plain language; pass --json for envelopes):
   stackey node revoke <grant-id> [--owner-dir ...] [--data-dir ...]
   stackey node grants [--data-dir ...] [--after <next_cursor>]
   stackey node events [--data-dir ...] [--after <next_cursor>]
-  stackey connect --invite-file <private-file> [--state-dir .stackey/agent] [--name Agent]
-  stackey connect <invitation> [--state-dir ...] [--name Agent]
+  stackey connect --invite-file <private-file> [--state-dir .stackey/agent] [--name agent-ABC123]
+  stackey connect <invitation> [--state-dir ...] [--name agent-ABC123]
   stackey status [--live] [--state-dir ...]
   stackey capabilities [--state-dir ...]
   stackey run demo.orders.read --schema
@@ -399,14 +400,15 @@ async function main() {
       return;
     }
     let invitation: string;
+    const code = isPairingCode((positionals[1] ?? '').toUpperCase()) ? (positionals[1] ?? '').toUpperCase() : undefined;
     if (values['invite-file']) {
       invitation = textField(record(readPrivateJson(resolve(values['invite-file']))).invitation, 8192);
-    } else if (isPairingCode((positionals[1] ?? '').toUpperCase())) {
-      invitation = await redeemPairingCodeAt(await resolveNodeEndpoint(dataDir, port), (positionals[1] ?? '').toUpperCase());
+    } else if (code) {
+      invitation = await redeemPairingCodeAt(await resolveNodeEndpoint(dataDir, port), code);
     } else {
       invitation = textField(positionals[1], 8192);
     }
-    output(await connect(invitation, stateDir, values.name ?? 'Agent')); return;
+    output(await connect(invitation, stateDir, values.name ?? (code ? `agent-${code}` : 'agent'))); return;
   }
   if (command === 'status' && positionals.length === 1) {
     if (values.live || values['state-dir'] !== undefined) {

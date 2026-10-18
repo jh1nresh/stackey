@@ -37,6 +37,7 @@ export async function startNode(dir: string, port = 45820, clock = () => Math.fl
   let windowStart = clock();
   let requests = 0;
   let agentRequests = 0;
+  let accessPolls = 0;
   const server = createServer(async (request, response) => {
     response.setHeader('content-type', 'application/json');
     response.setHeader('cache-control', 'no-store');
@@ -48,6 +49,7 @@ export async function startNode(dir: string, port = 45820, clock = () => Math.fl
       }
       const pairing = request.method === 'POST' && request.url === '/v1/pairings';
       const pairCode = request.method === 'POST' && request.url === '/v1/pair-codes';
+      const accessPoll = request.method === 'GET' && /^\/v1\/access-requests\/[0-9a-f-]{36}$/.test(request.url ?? '');
       const agentRoute = (request.method === 'POST' && ['/v1/challenges', '/v1/sessions', '/v1/operations', '/v1/access-requests'].includes(request.url ?? '')) ||
         (request.method === 'GET' && (request.url === '/v1/capabilities' || /^\/v1\/(pairings|operations|access-requests)\/[0-9a-f-]{36}$/.test(request.url ?? '')));
       if (!pairing && !pairCode && !agentRoute) {
@@ -55,8 +57,10 @@ export async function startNode(dir: string, port = 45820, clock = () => Math.fl
       }
       signedReply = !pairing && !pairCode;
       const now = clock();
-      if (now - windowStart >= 60) { windowStart = now; requests = 0; agentRequests = 0; }
-      const rateLimited = pairing || pairCode ? ++requests > 30 : ++agentRequests > 120;
+      if (now - windowStart >= 60) { windowStart = now; requests = 0; agentRequests = 0; accessPolls = 0; }
+      const rateLimited = pairing || pairCode ? ++requests > 30
+        : accessPoll ? ++accessPolls > 240
+        : ++agentRequests > 120;
       const rawProof = request.headers['x-stackey-proof'] ?? request.headers.dpop;
       const proof = !signedReply || rawProof === undefined ? '' : textField(rawProof, 8192);
       if (signedReply) requestHash = digest(proof);

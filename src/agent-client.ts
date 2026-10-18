@@ -164,15 +164,19 @@ export async function accessRequestStatus(dir: string, requestId: string) {
   return bootstrapRequest(context, 'GET', '/v1/access-requests/' + requestId);
 }
 
-async function waitForApproval(dir: string, timeoutMs = 120_000): Promise<void> {
+export const ACCESS_WAIT_MS = 120_000;
+
+async function waitForApproval(dir: string, timeoutMs = ACCESS_WAIT_MS): Promise<void> {
   const pending = await requestAccess(dir);
   const requestId = textField(record(pending.data).request_id, 36);
   const deadline = Date.now() + timeoutMs;
+  let delayMs = 1000;
   while (Date.now() <= deadline) {
     const current = await accessRequestStatus(dir, requestId);
     if (current.status === 'approved') return;
     if (current.status === 'denied') throw new AppError('permission_denied', 'Permission denied.', 403, 5, 'permission_denied');
-    await delay(1000);
+    await delay(delayMs);
+    delayMs = Math.min(delayMs * 2, 5000);
   }
   throw new AppError('permission_denied', 'Owner approval is required before requesting a session.', 403, 5, 'permission_denied');
 }
@@ -186,6 +190,11 @@ export async function takeCredentialWaiting(dir: string, operationId: string = r
     return await fetchCredential(dir, operationId);
   } catch (error) {
     if (!(error instanceof AppError) || !['permission_denied', 'budget_exceeded', 'grant_expired', 'grant_revoked'].includes(error.code)) throw error;
+    const notice = error.code === 'budget_exceeded' ? 'previous grant was spent'
+      : error.code === 'grant_revoked' ? 'previous grant was revoked'
+      : error.code === 'grant_expired' ? 'previous grant expired'
+      : 'owner approval is required';
+    process.stderr.write(`${notice}; requesting new approval…\n`);
     await waitForApproval(dir);
     return fetchCredential(dir, randomUUID());
   }

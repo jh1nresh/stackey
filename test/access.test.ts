@@ -11,7 +11,7 @@ import { agentAction } from '../src/access.js';
 import { agentContext, bootstrapProof, challenge, liveStatus, operation,
   resourceRequest, runOrders, session, verifiedResponse, type AgentContext } from '../src/agent-client.js';
 import { connect } from '../src/client.js';
-import { AppError, digest, EXIT_DENIED, EXIT_GRANT_REVOKED, exitCodeFor } from '../src/contracts.js';
+import { AppError, digest, EXIT_DENIED, EXIT_GRANT_REVOKED, exitCodeFor, record } from '../src/contracts.js';
 import { createIdentity, loadIdentity } from '../src/identity.js';
 import { startNode } from '../src/node.js';
 import { ACTION, initializeDemo, readOrders } from '../src/orders.js';
@@ -282,4 +282,21 @@ test('rate-limit receipts remain bound to challenge and resource requests and re
     error.code === 'rate_limited' && error.status === 'rate_limited' && error.httpStatus === 429 && error.exitCode === 4);
   assert.equal(f.store.db.prepare('SELECT COUNT(*) AS count FROM challenges').get()!.count, challengesBefore);
   assert.equal(f.store.db.prepare('SELECT consumed_at FROM challenges WHERE nonce = ?').get(nonce)!.consumed_at, null);
+});
+
+test('GET access-request polls use a separate bucket and stay available after the 120 agent request limit', async t => {
+  const f = await fixture(t);
+  const requestId = randomUUID();
+  f.store.db.prepare('INSERT INTO access_requests VALUES (?,?,?,?,?,?,?,?,?,NULL,NULL)')
+    .run(requestId, f.context.pairingId, f.context.identity.id, 'agent-1', 'connection_demo', 'credential_demo', 'GITHUB_TOKEN', 1, Math.floor(Date.now() / 1000) + 3600);
+  const nonce = await challenge(f.context);
+  for (let index = 0; index < 119; index++) await challenge(f.context);
+  await assert.rejects(challenge(f.context), error => error instanceof AppError &&
+    error.code === 'rate_limited' && error.status === 'rate_limited' && error.httpStatus === 429 && error.exitCode === 4);
+  const path = '/v1/access-requests/' + requestId;
+  const signed = await bootstrapProof(f.context, nonce, 'GET', path, '');
+  const response = await fetch(f.context.origin + path, { headers: { 'x-stackey-proof': signed }, redirect: 'error' });
+  const body = await verifiedResponse(f.context, response, digest(signed));
+  assert.equal(body.status, 'approval_required');
+  assert.equal(record(body.data).request_id, requestId);
 });
