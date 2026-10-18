@@ -27,7 +27,7 @@ Agents never read the vault. They receive a secret only through `credential.get`
 | Budget | `max_calls = 1`. A second successful or uncertain operation is `budget_exceeded`. |
 | Lifetime | Grant TTL is 60–300 seconds. |
 | Revocation | `grant.revoke` or credential remove/revoke stops further gets immediately. |
-| Audit | Append-only `audit_log` records credential, agent, origin, time, and result (`issued` / `refused` / …). No secret column. |
+| Audit | Append-only `audit_log` records credential, agent, origin, time, result, and reason (`issued` / denials / owner changes). No secret column. |
 
 The Node persists `{issued:true}` for the operation. The secret exists in process memory until the first completed poll, then is dropped. Replay returns `{issued:true}` with no value. Errors and logs go through the public error table and the secret scrubber.
 

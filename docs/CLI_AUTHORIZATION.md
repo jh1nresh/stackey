@@ -49,7 +49,7 @@ node dist/src/cli.js run demo.orders.read \
   --from 2026-09-26 --to 2026-10-02 --state-dir .stackey/agents/codex
 ```
 
-撤銷後 live status 為 `grant_revoked`，run exit 3。撤銷只影響該 Grant，不刪除共用 Connection，不收回先前交付的資料。
+撤銷後 live status 為 `grant_revoked`，`run` 與 `credential get --no-wait` 為 exit 7。預設的 `credential get` 會再送一次核准請求並等待 Owner，不會立刻以 7 結束。`node_locked` 仍為 exit 3；`permission_denied` 為 5，`grant_expired` 為 6，`budget_exceeded` 為 8。`node grants` 的 status 為 `active`、`spent`、`replaced`、`expired` 或 `revoked`（僅 Owner 撤銷）。撤銷只影響該 Grant，不刪除共用 Connection，不收回先前交付的資料。
 
 ## 身分與傳輸契約
 

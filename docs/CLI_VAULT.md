@@ -118,7 +118,7 @@ node dist/src/cli.js node approve PAIRING_ID --principal FULL_FINGERPRINT \
 
 第二個 Agent 用新 invitation 與自己的 state directory 配對，再由 Owner 核准同一個 CONNECTION_ID。憑證只保存一份，各 Agent 的 Grant、取用次數與撤銷互不共用。重啟 Node／重新解鎖相同 vault 後，原 Agent state directory 仍可用；已用完的 Grant 不會因重啟恢復次數。
 
-Agent 收到 `node_locked` 時 exit code 為 3，表示需 Owner 解鎖；不要把它當作參數錯誤而重新配對。
+Agent 收到 `node_locked` 時 exit code 為 3，表示需 Owner 解鎖；不要把它當作參數錯誤而重新配對。其他拒絕使用不同的 exit code：`permission_denied` 為 5、`grant_expired` 為 6、`grant_revoked` 為 7、`budget_exceeded` 為 8。預設 `credential get` 在 spent／expired／revoked／未核准時會等待新的 Owner 核准（stderr 會說明原因）；要立刻拿到上述 exit code 請加 `--no-wait`。`node grants` 會區分 `spent`（已用完 `max_calls`）、`replaced`（被 `--replace-grant` 取代）、`expired` 與 Owner 撤銷的 `revoked`。`stackey audit` 會列出成功 `issued`、上述拒絕，以及 pair / approve / replace / revoke / lock / unlock 等 Owner 變更；每列含 agent id、credential id、reason 與時間，不含秘密。
 
 `node revoke GRANT_ID` 停止該 Grant 後續取用，不會收回已交付的密碼或網站登入狀態。升級涉及 grants 表遷移，請先依 [升級步驟](CLI_AUTHORIZATION.md#本機重現) 停止舊程序並備份。
 

@@ -1,11 +1,12 @@
 import { randomUUID } from 'node:crypto';
 import { calculateJwkThumbprint, importJWK, jwtVerify, SignJWT } from 'jose';
-import { AppError, record, textField } from './contracts.js';
+import { AppError, EXIT_LOCKED, exitCodeFor, record, textField } from './contracts.js';
 import { publicKey, type Identity } from './identity.js';
 import { CREDENTIAL_GET_ACTION, CREDENTIAL_GET_TTL_MAX, CREDENTIAL_GET_TTL_MIN } from './credential-get.js';
 import { ACTION, CONNECTION, requireDemo, RESOURCE, WALLET } from './orders.js';
 import { integer, providerAction, resourceFor } from './providers.js';
 import type { Store } from './store.js';
+import { credentialForConnection, recordAudit, type AuditResult } from './website-sessions.js';
 
 export interface Grant {
   grant_id: string; pairing_id: string; principal: string; signed_grant: string;
@@ -13,8 +14,31 @@ export interface Grant {
   superseded_at: number | null;
 }
 export const seconds = () => Math.floor(Date.now() / 1000);
+export type GrantLifecycle = 'active' | 'spent' | 'replaced' | 'expired' | 'revoked';
 export function denied(code: string, message: string): never {
-  throw new AppError(code, message, 403, 3, code === 'grant_revoked' || code === 'grant_expired' ? code : 'permission_denied');
+  throw new AppError(code, message, 403, exitCodeFor(code), code === 'grant_revoked' || code === 'grant_expired' || code === 'node_locked' ? code : 'permission_denied');
+}
+export function grantCallCount(store: Store, grantId: string): number {
+  const provider = store.db.prepare("SELECT COUNT(*) AS n FROM provider_operations WHERE grant_id=? AND state!='failed'").get(grantId);
+  const demo = store.db.prepare('SELECT COUNT(*) AS n FROM operations WHERE grant_id=?').get(grantId);
+  return Number(provider?.n ?? 0) + Number(demo?.n ?? 0);
+}
+export function grantLifecycle(
+  grant: Pick<Grant, 'superseded_at' | 'revoked_at' | 'expires_at' | 'max_calls'>,
+  now: number,
+  calls: number,
+): GrantLifecycle {
+  if (grant.superseded_at != null) return 'replaced';
+  if (grant.revoked_at != null) return 'revoked';
+  if (calls >= grant.max_calls) return 'spent';
+  if (grant.expires_at <= now) return 'expired';
+  return 'active';
+}
+export function listedGrantStatus(store: Store, grant: Grant, now = seconds()): GrantLifecycle {
+  return grantLifecycle(grant, now, grantCallCount(store, grant.grant_id));
+}
+function auditDenial(store: Store, code: AuditResult, agentId: string, credentialId = '-', origin = '-', now = seconds()): void {
+  recordAudit(store, { result: code, reason: code, agent_id: agentId, credential_id: credentialId, origin, started_at: now });
 }
 export function event(store: Store, kind: string, subject: string, object: string, now: number): void {
   store.db.prepare('INSERT INTO events(event_id, kind, subject, object_id, created_at) VALUES (?, ?, ?, ?, ?)')
@@ -108,6 +132,12 @@ export async function approvePairing(store: Store, node: Identity, owner: Identi
     store.db.prepare('INSERT INTO grants(grant_id, pairing_id, principal, signed_grant, created_at, expires_at, version, wallet_id, action, connection_id, resource, max_calls, max_amount_minor) VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?)')
       .run(grantId, pairingId, principal, signed, now, now + ttl, walletId, action, connectionId, resource, maxCalls, maxAmount);
     event(store, 'grant_approved', principal, grantId, current);
+    const credentialId = credentialForConnection(store, connectionId);
+    recordAudit(store, {
+      result: replaceGrantId !== undefined ? 'replaced' : 'approved',
+      reason: replaceGrantId !== undefined ? 'replace' : 'approve',
+      agent_id: principal, credential_id: credentialId, origin: '-', started_at: current,
+    });
   });
   return { grant_id: grantId, pairing_id: pairingId, principal, owner: owner.id,
     wallet_id: walletId, connection_id: connectionId, resource, actions: [action], max_calls: maxCalls, max_amount_minor: maxAmount,
@@ -122,12 +152,25 @@ export function requireGrant(store: Store, grantId: string, principal: string, n
   if (vault) {
     const state = store.db.prepare("SELECT value FROM settings WHERE key='vault_unlocked'").get();
     const expiry = store.db.prepare("SELECT value FROM settings WHERE key='vault_unlock_until'").get();
-    if (state?.value !== '1' || Number(expiry?.value ?? 0) <= now) throw new AppError('node_locked','Unlock the bound vault first.',403,3,'node_locked');
+    if (state?.value !== '1' || Number(expiry?.value ?? 0) <= now) {
+      auditDenial(store, 'node_locked', principal);
+      throw new AppError('node_locked','Unlock the bound vault first.',403,EXIT_LOCKED,'node_locked');
+    }
   }
   const row = store.db.prepare('SELECT * FROM grants WHERE grant_id = ? AND principal = ?').get(grantId, principal) as unknown as Grant | undefined;
-  if (!row) denied('permission_denied', 'No matching grant is available.');
-  if (row.revoked_at !== null) denied('grant_revoked', 'Owner revoked this grant.');
-  if (row.expires_at <= now) denied('grant_expired', 'This grant has expired.');
+  if (!row) {
+    auditDenial(store, 'permission_denied', principal);
+    denied('permission_denied', 'No matching grant is available.');
+  }
+  const credentialId = credentialForConnection(store, row.connection_id);
+  if (row.revoked_at !== null) {
+    auditDenial(store, 'grant_revoked', principal, credentialId);
+    denied('grant_revoked', 'Owner revoked this grant.');
+  }
+  if (row.expires_at <= now) {
+    auditDenial(store, 'grant_expired', principal, credentialId);
+    denied('grant_expired', 'This grant has expired.');
+  }
   return row;
 }
 
@@ -167,7 +210,13 @@ export async function revokeGrant(store: Store, node: Identity, owner: Identity,
     if (current >= now + 30) denied('invalid_owner_proof', 'Owner confirmation expired before acceptance.');
     const changed = store.db.prepare('UPDATE grants SET revoked_at = ?, version = version + 1, signed_revocation = ? WHERE grant_id = ? AND version = ? AND revoked_at IS NULL')
       .run(current, signed, grantId, row.version);
-    if (changed.changes) event(store, 'grant_revoked', row.principal, grantId, current);
+    if (changed.changes) {
+      event(store, 'grant_revoked', row.principal, grantId, current);
+      recordAudit(store, {
+        result: 'revoked', reason: 'revoke', agent_id: row.principal,
+        credential_id: credentialForConnection(store, row.connection_id), origin: '-', started_at: current,
+      });
+    }
   });
   return { grant_id: grantId, status: 'revoked' };
 }

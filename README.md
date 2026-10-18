@@ -10,6 +10,80 @@ The local CLI supports pairing, Owner approval, short-lived DPoP sessions, capab
 
 **The single source of truth for the current product specification is [docs/SPEC.md](docs/SPEC.md).** Most of the full product API and data model remain to be implemented. For the currently runnable functionality, see the [pairing format](docs/CLI_PAIRING.md) and [approval, execution, and revocation guide](docs/CLI_AUTHORIZATION.md).
 
+## 60-second quickstart
+
+Requires macOS or Linux and Node.js 22.18 or later. Local only — Stackey stores credentials and hands them to allowlisted agents. It never logs in, opens a browser, or keeps a website session.
+
+```bash
+npm ci --ignore-scripts
+npm run build
+node dist/src/cli.js                 # or: node dist/src/cli.js init
+node dist/src/cli.js add GITHUB_TOKEN
+# hidden prompt; or pass --secret-file with {"value":"..."}
+node dist/src/cli.js connect
+# prints one line: stackey connect ABC123
+```
+
+Paste that line into the agent (or run it in the agent’s environment):
+
+```bash
+node dist/src/cli.js connect ABC123 --state-dir .stackey/agent
+node dist/src/cli.js credential get --state-dir .stackey/agent
+# blocks until the owner approves (up to two minutes)
+# spent/expired/revoked grants also wait for a new approval
+# --no-wait returns immediately: exit 5 not approved, 6 expired, 7 revoked, 8 spent
+# exit 3 means the vault is locked
+```
+
+On the owner side, approve the one-use request (no grant IDs):
+
+```bash
+node dist/src/cli.js approve
+# agent-ABC123 wants GITHUB_TOKEN once — approve? [y/N]
+node dist/src/cli.js status
+```
+
+`status` lists credentials, connected agents, pending requests, recent denials (plain language, local time), and the backup reminder. The recovery phrase is saved privately; run `stackey backup` when you can — you do not write it down up front.
+
+Allowlisting, one-use grants, TTL, revocation, audit, and encryption at rest stay in force. Advanced commands (`node invite`, `node approve --replace-grant`, fingerprints) keep working for scripts that already use them.
+
+## 60 秒快速開始
+
+需要 macOS 或 Linux，以及 Node.js 22.18 以上。僅限本機。Stackey 只保管憑證並交給允許清單內的 agent；不會代為登入、開啟瀏覽器或保存網站工作階段。
+
+```bash
+npm ci --ignore-scripts
+npm run build
+node dist/src/cli.js                 # 或 node dist/src/cli.js init
+node dist/src/cli.js add GITHUB_TOKEN
+# 隱藏輸入；或用 --secret-file，內容為 {"value":"..."}
+node dist/src/cli.js connect
+# 印出一行：stackey connect ABC123
+```
+
+把這一行貼給 agent（或在 agent 環境執行）：
+
+```bash
+node dist/src/cli.js connect ABC123 --state-dir .stackey/agent
+node dist/src/cli.js credential get --state-dir .stackey/agent
+# 預設會等到 Owner 核准（最多約兩分鐘）
+# 已用完／過期／撤銷的 Grant 也會再送一次核准請求
+# --no-wait 立即結束：exit 5 未核准、6 過期、7 撤銷、8 已用完
+# exit 3 表示 vault 已上鎖
+```
+
+Owner 核准一次性取用（不必查 Grant ID）：
+
+```bash
+node dist/src/cli.js approve
+# agent-ABC123 wants GITHUB_TOKEN once — approve? [y/N]
+node dist/src/cli.js status
+```
+
+`status` 會用白話列出憑證、已連線 agent、待核准請求、最近拒絕（本地時間），以及備份提醒。助記詞先存在本機私有檔，之後再跑 `stackey backup`，一開始不必抄寫。
+
+允許清單、一次性 Grant、TTL、撤銷、稽核與靜態加密仍然有效。進階命令（`node invite`、`node approve --replace-grant`、指紋）維持可用。
+
 For API setup for the three services, agent execution, and the sandbox test evidence, see the [CLI service integration guide](docs/CLI_INTEGRATIONS.md).
 
 For the local vault and seed-backed Owner, see the [CLI vault guide](docs/CLI_VAULT.md). The legacy pairing demo continues to use its existing Owner and does not migrate automatically.
@@ -18,7 +92,7 @@ For agent password/API-key access, use the [credential handoff walkthrough](docs
 
 ## Local Setup: Step One
 
-Requires macOS or Linux and Node.js 22.18 or later. Stackey uses Node's native SQLite support; Node 22 may print an experimental warning to stderr.
+Requires macOS or Linux and Node.js 22.18 or later. The CLI exits with a clear error on older Node versions and does not print Node's experimental SQLite warning.
 
 ```bash
 npm ci --ignore-scripts

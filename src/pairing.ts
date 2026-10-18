@@ -3,6 +3,7 @@ import { calculateJwkThumbprint, decodeProtectedHeader, importJWK, jwtVerify, Si
 import { AppError, digest, displayName, endpoint, INVITE_TYPE, PROOF_TYPE, RECEIPT_TYPE, record, textField } from './contracts.js';
 import { publicKey, type Identity } from './identity.js';
 import { Store, type Pairing } from './store.js';
+import { recordAudit } from './website-sessions.js';
 
 export interface Invitation {
   endpoint: string;
@@ -116,6 +117,7 @@ export async function acceptPairing(store: Store, node: Identity, origin: string
     textField(invitePayload.jti, 64), digest(token),
     { jti: proofJti, issuedAt: claims.iat as number, expiresAt: claims.exp as number }, pairing, clock,
   );
+  recordAudit(store, { result: 'paired', reason: 'pair', agent_id: principal, started_at: acceptedAt });
   return new SignJWT({
     purpose: 'pairing-receipt', pairing_id: pairing.pairing_id,
     principal, display_name: pairing.display_name, status: pairing.status,

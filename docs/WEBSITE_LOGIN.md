@@ -137,7 +137,7 @@ A “single-use key” in the founder’s wording is this grant + call budget, n
 - `operation_dispatched` / `operation_completed` / `operation_failed` / `operation_result_unknown`
 - Grant row: pairing, principal, action, connection, `max_calls`, TTL, version
 - Operation row: hashes and sanitized JSON
-- `audit_log` (append-only): credential id, agent id, origin, time, result (`authenticated` \| `human_required` \| `failed` \| `refused` \| `revoked`), optional session handle. No secret. Read with `stackey audit`.
+- `audit_log` (append-only): credential id, agent id, origin, time, result, reason, optional session handle. Results include website outcomes (`authenticated` \| `human_required` \| `failed` \| `refused` \| `revoked` \| `issued`), denials (`budget_exceeded` \| `grant_expired` \| `grant_revoked` \| `permission_denied` \| `agent_not_paired` \| `node_locked`), and owner changes (`paired` \| `approved` \| `replaced` \| `locked` \| `unlocked`). No secret. Read with `stackey audit`.
 
 Events still store kind, subject, object ID, and time. They must never store password, username, cookie, DPoP proof, or access token. Credential revoke and grant revoke both bump grant version, write `stackey-revocation+jwt`, and invalidate existing DPoP sessions. Revoke cannot un-type a password already submitted to a real site. Vault-held jars are wiped immediately.
 

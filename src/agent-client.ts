@@ -4,7 +4,7 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { importJWK, jwtVerify, SignJWT } from 'jose';
 import * as oauth from 'oauth4webapi';
 import { BOOTSTRAP_TYPE, issuer, isUuid, RESPONSE_TYPE } from './access.js';
-import { AppError, digest, endpoint, publicErrorMessage, record, textField } from './contracts.js';
+import { AppError, digest, endpoint, exitCodeFor, publicErrorMessage, record, textField } from './contracts.js';
 import { CREDENTIAL_GET_ACTION } from './credential-get.js';
 import { loadIdentity, publicKey, readPrivateJson, type Identity } from './identity.js';
 import { providerAction, providerParams } from './providers.js';
@@ -49,9 +49,8 @@ export async function verifiedResponse(context: AgentContext, response: Response
   if (!response.ok) {
     const error = record(body.error);
     const status = textField(body.status, 64);
-    throw new AppError(textField(error.code, 64), textField(error.message, 512), response.status,
-      status === 'permission_denied' || status === 'grant_expired' || status === 'grant_revoked' || status === 'node_locked' ? 3 :
-        status === 'rate_limited' ? 4 : 2, status);
+    const code = textField(error.code, 64);
+    throw new AppError(code, textField(error.message, 512), response.status, exitCodeFor(code, status === 'rate_limited' ? 4 : 2), status);
   }
   return body;
 }
@@ -155,7 +154,53 @@ export async function operation(dir: string, id: string) {
   return resourceRequest(context, await session(context), 'GET', '/v1/operations/' + id);
 }
 
+export async function requestAccess(dir: string) {
+  const context = await agentContext(dir);
+  return bootstrapRequest(context, 'POST', '/v1/access-requests', JSON.stringify({ pairing_id: context.pairingId }));
+}
+
+export async function accessRequestStatus(dir: string, requestId: string) {
+  const context = await agentContext(dir);
+  return bootstrapRequest(context, 'GET', '/v1/access-requests/' + requestId);
+}
+
+export const ACCESS_WAIT_MS = 120_000;
+
+async function waitForApproval(dir: string, timeoutMs = ACCESS_WAIT_MS): Promise<void> {
+  const pending = await requestAccess(dir);
+  const requestId = textField(record(pending.data).request_id, 36);
+  const deadline = Date.now() + timeoutMs;
+  let delayMs = 1000;
+  while (Date.now() <= deadline) {
+    const current = await accessRequestStatus(dir, requestId);
+    if (current.status === 'approved') return;
+    if (current.status === 'denied') throw new AppError('permission_denied', 'Permission denied.', 403, 5, 'permission_denied');
+    await delay(delayMs);
+    delayMs = Math.min(delayMs * 2, 5000);
+  }
+  throw new AppError('permission_denied', 'Owner approval is required before requesting a session.', 403, 5, 'permission_denied');
+}
+
 export async function takeCredential(dir: string, operationId: string = randomUUID()): Promise<{ value: string }> {
+  return fetchCredential(dir, operationId);
+}
+
+export async function takeCredentialWaiting(dir: string, operationId: string = randomUUID()): Promise<{ value: string }> {
+  try {
+    return await fetchCredential(dir, operationId);
+  } catch (error) {
+    if (!(error instanceof AppError) || !['permission_denied', 'budget_exceeded', 'grant_expired', 'grant_revoked'].includes(error.code)) throw error;
+    const notice = error.code === 'budget_exceeded' ? 'previous grant was spent'
+      : error.code === 'grant_revoked' ? 'previous grant was revoked'
+      : error.code === 'grant_expired' ? 'previous grant expired'
+      : 'owner approval is required';
+    process.stderr.write(`${notice}; requesting new approval…\n`);
+    await waitForApproval(dir);
+    return fetchCredential(dir, randomUUID());
+  }
+}
+
+async function fetchCredential(dir: string, operationId: string): Promise<{ value: string }> {
   let body = await runOrders(dir, CREDENTIAL_GET_ACTION, {}, operationId);
   const deadline = Date.now() + 45_000;
   while (body.status === 'operation_pending') {
@@ -167,11 +212,11 @@ export async function takeCredential(dir: string, operationId: string = randomUU
     const payload = record(record(body.data).result ?? {});
     const err = payload.error ? record(payload.error) : {};
     const code = typeof err.code === 'string' ? err.code : 'result_unknown';
-    throw new AppError(code, publicErrorMessage(code), 403, 3, 'permission_denied');
+    throw new AppError(code, publicErrorMessage(code), 403, exitCodeFor(code), 'permission_denied');
   }
   const result = record(record(body.data).result);
   if (typeof result.value === 'string' && result.value.length > 0 && Object.keys(result).join(',') === 'value') {
     return { value: result.value };
   }
-  throw new AppError('already_issued', 'This credential was already issued for this operation.', 403, 3, 'permission_denied');
+  throw new AppError('already_issued', 'This credential was already issued for this operation.', 403, exitCodeFor('already_issued'), 'permission_denied');
 }
