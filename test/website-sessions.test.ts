@@ -52,7 +52,7 @@ test('audit_log is append-only, has no secret column, and listAudit pages by cur
     writeAudit(f.value, { credential_id: credential, agent_id: 'agent_a', origin: 'https://dashboard.example.test', started_at: 101, result: 'revoked' });
     writeAudit(f.value, { credential_id: credential, agent_id: 'agent_a', origin: 'https://dashboard.example.test', started_at: 102, result: 'issued' });
     const columns = f.value.db.prepare('PRAGMA table_info(audit_log)').all().map(row => String(row.name));
-    assert.deepEqual(columns.sort(), ['agent_id', 'credential_id', 'id', 'origin', 'result', 'session_handle_id', 'started_at']);
+    assert.deepEqual(columns.sort(), ['agent_id', 'credential_id', 'id', 'origin', 'reason', 'result', 'session_handle_id', 'started_at']);
     assert.throws(() => f.value.db.prepare("UPDATE audit_log SET result='failed'").run());
     assert.throws(() => f.value.db.prepare('DELETE FROM audit_log').run());
     const first = listAudit(f.value);

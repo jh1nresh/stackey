@@ -4,7 +4,7 @@
 
 ## 契約與實際結構
 
-- CLI：`src/cli.ts`，編譯後 `node dist/src/cli.js`。
+- CLI：`src/cli.ts` 先檢查 Node 版本再載入 `src/cli-app.ts`；編譯後 `node dist/src/cli.js`。
 - Node：`src/node.ts`，僅 bind `127.0.0.1`，僅提供 `POST /v1/pairings`。
 - 身分與狀態：`src/identity.ts`、`src/store.ts`；Node Ed25519，agent P-256／ES256，指紋採 RFC 7638 JWK thumbprint。
 - 配對：`src/pairing.ts`；成熟 jose 函式庫提供 JWT／JWS 及金鑰操作，沒有自製簽章演算法。
@@ -30,7 +30,7 @@ Proof 型別是版本化的 Stackey bootstrap JWS／JWT，**不是 OAuth DPoP se
 成功回傳 `schema_version: 1`、`request_id`、`status: approval_required`、pairing ID、公鑰指紋與 `granted_actions: []`。`status` 明確標示資料來源為本機 receipt，不宣稱 Node 在線或權限已批准。
 
 - 錯誤參數／格式：exit 2。
-- 無效／過期 invitation 或 Node 拒絕：exit 3，沒有服務授權。
+- 無效／過期／已使用 invitation 或 Node 拒絕（`invalid_invitation`、`invitation_used`、`pairing_rejected`）：exit 5，沒有服務授權。exit 3 只用於 vault locked（`node_locked`）。
 - 請求逾時、receipt 無法驗證或本機 receipt 保存失敗：exit 4、`result_unknown`。Owner 查看 `node pairings`，不自動重送或宣稱未接入。
 - 非預期錯誤：固定公開訊息，exit 1；不印出 JWK、邀請或原始第三方錯誤文字。
 

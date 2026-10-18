@@ -18,7 +18,7 @@ For agent password/API-key access, use the [credential handoff walkthrough](docs
 
 ## Local Setup: Step One
 
-Requires macOS or Linux and Node.js 22.18 or later. Stackey uses Node's native SQLite support; Node 22 may print an experimental warning to stderr.
+Requires macOS or Linux and Node.js 22.18 or later. The CLI exits with a clear error on older Node versions and does not print Node's experimental SQLite warning.
 
 ```bash
 npm ci --ignore-scripts

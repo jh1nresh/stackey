@@ -9,6 +9,7 @@ import { consumeProof, denied, event, grantForPairing, proofTime, requireGrant, 
   type Grant, type ProofTime } from './policy.js';
 import { dispatchProviderOperation } from './provider-operations.js';
 import type { Store } from './store.js';
+import { recordAudit } from './website-sessions.js';
 
 export const BOOTSTRAP_TYPE = 'stackey-request+jwt';
 export const RESPONSE_TYPE = 'stackey-response+jwt';
@@ -37,7 +38,10 @@ async function bootstrap(store: Store, node: Identity, origin: string, request: 
     if (payload.htm !== request.method || payload.htu !== origin + request.path ||
         payload.body_hash !== digest(request.rawBody) || payload.purpose !== 'agent-bootstrap') throw new Error('Binding');
     const pairing = store.db.prepare('SELECT 1 FROM pairings WHERE principal = ?').get(principal);
-    if (!pairing) throw new Error('Unpaired');
+    if (!pairing) {
+      recordAudit(store, { result: 'agent_not_paired', reason: 'agent_not_paired', agent_id: principal, started_at: now });
+      throw new Error('Unpaired');
+    }
     return { principal, proof: proofTime(payload, now) };
   } catch { denied('invalid_proof', 'Registered agent key and a valid request proof are required.'); }
 }
@@ -71,6 +75,18 @@ async function resource(store: Store, node: Identity, origin: string, request: A
   return { principal: claims.sub, proof, grant, session: claims };
 }
 
+async function requireLiveVault(store: Store, agentId: string, now: number): Promise<void> {
+  const vault = store.db.prepare("SELECT value FROM settings WHERE key='vault_dir'").get();
+  if (!vault) return;
+  try { await vaultRequest(String(vault.value), 'status'); }
+  catch (error) {
+    if (error instanceof AppError && error.code === 'node_locked') {
+      recordAudit(store, { result: 'node_locked', reason: 'node_locked', agent_id: agentId, started_at: now });
+    }
+    throw error;
+  }
+}
+
 function checkSession(store: Store, input: VerifiedRequest, now: number): Grant {
   const session = input.session!;
   const grant = requireGrant(store, input.grant!.grant_id, input.principal, now);
@@ -101,7 +117,10 @@ export async function agentAction(store: Store, node: Identity, origin: string, 
     const pairingId = request.method === 'POST' ? textField(body!.pairing_id, 36) : request.path.split('/').at(-1)!;
     if (!isUuid(pairingId) || (body && Object.keys(body).join(',') !== 'pairing_id')) throw new AppError('invalid_request', 'Expected one pairing ID.');
     const pairing = store.db.prepare('SELECT * FROM pairings WHERE pairing_id = ? AND principal = ?').get(pairingId, input.principal);
-    if (!pairing) denied('permission_denied', 'This pairing does not belong to the requesting key.');
+    if (!pairing) {
+      recordAudit(store, { result: 'permission_denied', reason: 'permission_denied', agent_id: input.principal, started_at: now });
+      denied('permission_denied', 'This pairing does not belong to the requesting key.');
+    }
     const grant = grantForPairing(store, pairingId);
     if (request.method === 'GET') {
       if (grant && grant.revoked_at === null && grant.expires_at > now) await verifyGrant(store, node, grant, now);
@@ -118,9 +137,11 @@ export async function agentAction(store: Store, node: Identity, origin: string, 
           granted_actions: status === 'active' ? [current!.action] : [], source: 'live_node' });
       });
     }
-    if (!grant) denied('permission_denied', 'Owner approval is required before requesting a session.');
-    const vault = store.db.prepare("SELECT value FROM settings WHERE key='vault_dir'").get();
-    if (vault) await vaultRequest(String(vault.value), 'status');
+    if (!grant) {
+      recordAudit(store, { result: 'permission_denied', reason: 'permission_denied', agent_id: input.principal, started_at: now });
+      denied('permission_denied', 'Owner approval is required before requesting a session.');
+    }
+    await requireLiveVault(store, input.principal, now);
     requireGrant(store, grant.grant_id, input.principal, now);
     await verifyGrant(store, node, grant, now);
     if (grant.action === ACTION) requireDemo(store);
@@ -147,9 +168,8 @@ export async function agentAction(store: Store, node: Identity, origin: string, 
     request.path === '/v1/operations' && request.method === 'POST' ? 'run' :
     /^\/v1\/operations\/[0-9a-f-]{36}$/.test(request.path) && request.method === 'GET' ? 'operation' : undefined;
   if (!route) throw new AppError('route_not_available', 'Route is not available.', 404);
-  const vault = store.db.prepare("SELECT value FROM settings WHERE key='vault_dir'").get();
-  if (vault) await vaultRequest(String(vault.value), 'status');
   const input = await resource(store, node, origin, request, now);
+  await requireLiveVault(store, input.principal, now);
   if (input.grant!.action !== ACTION) {
     return dispatchProviderOperation(store, node, request, input.principal, input.proof, () => checkSession(store, input, clock()), clock);
   }

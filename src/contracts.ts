@@ -127,14 +127,69 @@ export const PUBLIC_ERROR_MESSAGES: Record<string, string> = Object.freeze({
   wallet_not_found: 'Select an existing wallet.',
 });
 
+export const EXIT_OK = 0;
+export const EXIT_INTERNAL = 1;
+export const EXIT_INVALID = 2;
+export const EXIT_LOCKED = 3;
+export const EXIT_RETRY = 4;
+export const EXIT_DENIED = 5;
+export const EXIT_GRANT_EXPIRED = 6;
+export const EXIT_GRANT_REVOKED = 7;
+export const EXIT_BUDGET = 8;
+
+const EXIT_BY_CODE: Record<string, number> = Object.freeze({
+  node_locked: EXIT_LOCKED,
+  permission_denied: EXIT_DENIED,
+  agent_not_paired: EXIT_DENIED,
+  origin_not_allowed: EXIT_DENIED,
+  action_not_allowed: EXIT_DENIED,
+  already_issued: EXIT_DENIED,
+  principal_mismatch: EXIT_DENIED,
+  replacement_mismatch: EXIT_DENIED,
+  pairing_rejected: EXIT_DENIED,
+  invalid_proof: EXIT_DENIED,
+  invalid_session: EXIT_DENIED,
+  invalid_session_proof: EXIT_DENIED,
+  owner_mismatch: EXIT_DENIED,
+  policy_changed: EXIT_DENIED,
+  proof_replayed: EXIT_DENIED,
+  invitation_used: EXIT_DENIED,
+  invalid_invitation: EXIT_DENIED,
+  invalid_grant: EXIT_DENIED,
+  credential_revoked: EXIT_DENIED,
+  credential_not_found: EXIT_DENIED,
+  connection_unavailable: EXIT_DENIED,
+  browser_request_denied: EXIT_DENIED,
+  grant_expired: EXIT_GRANT_EXPIRED,
+  grant_revoked: EXIT_GRANT_REVOKED,
+  budget_exceeded: EXIT_BUDGET,
+  rate_limited: EXIT_RETRY,
+  result_unknown: EXIT_RETRY,
+  node_unreachable: EXIT_RETRY,
+  operation_result_unknown: EXIT_RETRY,
+  pairing_result_unknown: EXIT_RETRY,
+  link_result_unknown: EXIT_RETRY,
+  internal_error: EXIT_INTERNAL,
+});
+
+export function exitCodeFor(code: string, fallback = EXIT_INVALID): number {
+  if (Object.hasOwn(EXIT_BY_CODE, code)) return EXIT_BY_CODE[code]!;
+  if (fallback === EXIT_LOCKED && code !== 'node_locked') return EXIT_DENIED;
+  return fallback;
+}
+
 export class AppError extends Error {
+  readonly exitCode: number;
   constructor(
     readonly code: string,
     message: string,
     readonly httpStatus = 400,
-    readonly exitCode = 2,
+    exitCode = EXIT_INVALID,
     readonly status = 'invalid_request',
-  ) { super(message); }
+  ) {
+    super(message);
+    this.exitCode = exitCodeFor(code, exitCode);
+  }
 }
 
 export function invalid(code: string, message: string): never {
@@ -208,7 +263,7 @@ export function publicError(error: unknown, secret?: string) {
     error: { code, message },
   }, secret);
   return {
-    exitCode: known ? raw.exitCode : 1,
+    exitCode: known ? exitCodeFor(code, raw.exitCode) : EXIT_INTERNAL,
     httpStatus: known ? raw.httpStatus : 500,
     body: body as { schema_version: 1; request_id: string; status: string; error: { code: string; message: string } },
   };

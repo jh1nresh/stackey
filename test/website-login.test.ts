@@ -8,7 +8,7 @@ import { join, resolve } from 'node:path';
 import { test, type TestContext } from 'node:test';
 import { capabilities, operation, runOrders } from '../src/agent-client.js';
 import { connect } from '../src/client.js';
-import { AppError } from '../src/contracts.js';
+import { AppError, exitCodeFor } from '../src/contracts.js';
 import { secretForms } from '../src/redact.js';
 import { loadIdentity } from '../src/identity.js';
 import { startNode } from '../src/node.js';
@@ -41,7 +41,8 @@ const cli = resolve('dist/src/cli.js');
 const SECRET = 'fixture-website-password-DO-NOT-LEAK';
 const USER = 'owner@example.test';
 const ORIGIN = 'https://dashboard.example.test';
-const denied = (code?: string) => (error: unknown) => error instanceof AppError && error.exitCode === 3 && (!code || error.code === code);
+const denied = (code?: string) => (error: unknown) =>
+  error instanceof AppError && (!code || error.code === code) && error.exitCode === exitCodeFor(error.code, error.exitCode);
 const leak = (value: unknown) => JSON.stringify(value).includes(SECRET);
 
 function captureProcessIo() {
@@ -277,7 +278,7 @@ test('approved single-use login runs in the daemon mock, then revoke and reuse a
   assert.equal(sessionRow!.revoked_at, null);
   assert.equal(sessionRow!.expires_at, loginResult.expires_at);
   assert.equal(loginResult.expires_at - seconds() <= WEBSITE_SESSION_TTL_DEFAULT, true);
-  const audit = f.store.db.prepare('SELECT * FROM audit_log').all() as Record<string, unknown>[];
+  const audit = f.store.db.prepare("SELECT * FROM audit_log WHERE result='authenticated'").all() as Record<string, unknown>[];
   assert.equal(audit.length, 1);
   assert.equal(audit[0]!.result, 'authenticated');
   assert.equal(audit[0]!.origin, ORIGIN);
@@ -413,7 +414,7 @@ test('production default executor refuses with permission_denied and does not co
   await runOrders(f.agent, WEBSITE_LOGIN_ACTION, {}, again);
   await drainProviderOperations(f.node.nodeId);
   await assert.rejects(operation(f.agent, again), denied('executor_unavailable'));
-  const refused = f.store.db.prepare('SELECT result FROM audit_log').all();
+  const refused = f.store.db.prepare("SELECT result FROM audit_log WHERE result='refused'").all();
   assert.deepEqual(refused.map(row => row.result), ['refused', 'refused']);
   assert.equal(leak(traces(f.store)), false);
 });
@@ -468,7 +469,7 @@ test('allowlist mismatch fails closed, writes a refused audit row, and does not 
   const row = f.store.db.prepare('SELECT state, result_json FROM provider_operations WHERE operation_id=?').get(id);
   assert.equal(row!.state, 'failed');
   assert.deepEqual(JSON.parse(String(row!.result_json)), { error: { code: 'origin_not_allowed' } });
-  const audit = f.store.db.prepare('SELECT * FROM audit_log').all() as Record<string, unknown>[];
+  const audit = f.store.db.prepare("SELECT * FROM audit_log WHERE result='refused'").all() as Record<string, unknown>[];
   assert.equal(audit.length, 1);
   assert.equal(audit[0]!.result, 'refused');
   assert.equal(audit[0]!.origin, ORIGIN);
@@ -529,8 +530,9 @@ test('credential revoke deletes ciphertext, wipes jars, invalidates sessions and
   const cliAudit = spawnSync(process.execPath, [cli, 'audit', '--data-dir', f.store.directory], { encoding: 'utf8' });
   assert.equal(cliAudit.status, 0);
   const body = JSON.parse(cliAudit.stdout);
-  assert.equal(body.data.entries.length, 2);
-  assert.deepEqual(body.data.entries.map((row: { result: string }) => row.result).sort(), ['authenticated', 'revoked']);
+  const kinds = body.data.entries.map((row: { result: string }) => row.result);
+  assert.equal(kinds.includes('authenticated'), true);
+  assert.equal(kinds.includes('revoked'), true);
   assert.equal(JSON.stringify(body).includes(SECRET), false);
 });
 

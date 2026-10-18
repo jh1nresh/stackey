@@ -15,7 +15,8 @@ import { connectionConfig, executeProvider, integer, providerParams, supports } 
 import { payMpp, type PaymentContinuation } from './mpp-payment.js';
 import { sessionPath } from './vault-client.js';
 import {
-  addCredentialOrigin, createWebsiteSession, originAllowed, revokeWebsiteSessions, websiteSessionTtl, writeAudit,
+  addCredentialOrigin, createWebsiteSession, linkConnectionCredential, originAllowed, recordAudit,
+  revokeWebsiteSessions, websiteSessionTtl, writeAudit,
   type AuditResult,
 } from './website-sessions.js';
 import { CREDENTIAL_GET_ACTION, credentialGetOrigin, credentialHandoff } from './credential-get.js';
@@ -191,7 +192,10 @@ export async function unlockVault(dir:string,recoveryFile:string|undefined,nodeD
       try{
         if(value.provider==='website'||value.provider==='credential'){
           const origins=new Store(configuredNodeDir);
-          try { addCredentialOrigin(origins,String(value.config.credential_id),websiteOrigin(value.config.origin)); }
+          try {
+            addCredentialOrigin(origins,String(value.config.credential_id),websiteOrigin(value.config.origin));
+            linkConnectionCredential(origins,value.id,String(value.config.credential_id));
+          }
           finally { origins.close(); }
         }
         save();
@@ -337,7 +341,15 @@ export async function unlockVault(dir:string,recoveryFile:string|undefined,nodeD
   server.requestTimeout=5000;server.headersTimeout=5000;server.keepAliveTimeout=500;
   let timer:ReturnType<typeof setTimeout>|undefined;
   async function close() {
-    closing??=(async()=>{if(timer)clearTimeout(timer);await queue;setPolicy(false);await new Promise<void>((resolve,reject)=>{server.close(error=>error?reject(error):resolve());server.closeIdleConnections();});vault.close();if(existsSync(pointer)&&record(readPrivateJson(pointer)).token===token)unlinkSync(pointer);if(existsSync(socket))unlinkSync(socket);rmdirSync(socketDir);})();return closing;
+    closing??=(async()=>{
+      if(timer)clearTimeout(timer);await queue;setPolicy(false);
+      try {
+        const auditStore=new Store(configuredNodeDir);
+        try { recordAudit(auditStore,{result:'locked',reason:'lock',agent_id:vault.owner.id,started_at:clock()}); }
+        finally { auditStore.close(); }
+      } catch { /* audit is best-effort around session teardown */ }
+      await new Promise<void>((resolve,reject)=>{server.close(error=>error?reject(error):resolve());server.closeIdleConnections();});vault.close();if(existsSync(pointer)&&record(readPrivateJson(pointer)).token===token)unlinkSync(pointer);if(existsSync(socket))unlinkSync(socket);rmdirSync(socketDir);
+    })();return closing;
   }
   try {
     writePrivateJson(pointer,{socket,token,pid:process.pid,vault_id:vault.vaultId,expires_at:expiresAt});
@@ -353,6 +365,11 @@ export async function unlockVault(dir:string,recoveryFile:string|undefined,nodeD
       });
     } finally {store.close();}
     timer=setTimeout(()=>{void close();},ttl*1000);timer.unref();
+    try {
+      const auditStore=new Store(configuredNodeDir);
+      try { recordAudit(auditStore,{result:'unlocked',reason:'unlock',agent_id:vault.owner.id,started_at:clock()}); }
+      finally { auditStore.close(); }
+    } catch { /* audit is best-effort around session setup */ }
   }catch(error){server.close();vault.close();if(existsSync(pointer)&&record(readPrivateJson(pointer)).token===token)unlinkSync(pointer);if(existsSync(socket))unlinkSync(socket);rmdirSync(socketDir);throw error;}
   return {server,vaultId:vault.vaultId,owner:vault.owner.id,expiresAt,close};
 }

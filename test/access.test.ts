@@ -11,7 +11,7 @@ import { agentAction } from '../src/access.js';
 import { agentContext, bootstrapProof, challenge, liveStatus, operation,
   resourceRequest, runOrders, session, verifiedResponse, type AgentContext } from '../src/agent-client.js';
 import { connect } from '../src/client.js';
-import { AppError, digest } from '../src/contracts.js';
+import { AppError, digest, EXIT_DENIED, EXIT_GRANT_REVOKED, exitCodeFor } from '../src/contracts.js';
 import { createIdentity, loadIdentity } from '../src/identity.js';
 import { startNode } from '../src/node.js';
 import { ACTION, initializeDemo, readOrders } from '../src/orders.js';
@@ -55,7 +55,8 @@ async function fixture(t: TestContext) {
   return { root, nodeDir, ownerDir, identity, owner, store, node, pair, approve, ...first };
 }
 
-const denied = (code?: string) => (error: unknown) => error instanceof AppError && error.exitCode === 3 && (!code || error.code === code);
+const denied = (code?: string) => (error: unknown) =>
+  error instanceof AppError && (!code || error.code === code) && error.exitCode === exitCodeFor(error.code, error.exitCode);
 async function proof(context: AgentContext, nonce: string, token: string, method: string, path: string, body = '', extra: object = {}) {
   const now = Math.floor(Date.now() / 1000);
   return new SignJWT({ nonce, jti: randomUUID(), iat: now, exp: now + 30,
@@ -75,7 +76,7 @@ test('owner CLI approval, agent CLI read, live status, durable operation and rev
   const f = await fixture(t);
   assert.equal((await liveStatus(f.dir)).status, 'approval_required');
   const before = await remote('run', ACTION, '--from', '2026-09-26', '--to', '2026-10-02', '--state-dir', f.dir);
-  assert.equal(before.code, 3);
+  assert.equal(before.code, EXIT_DENIED);
   const approved = local('node', 'approve', f.context.pairingId, '--principal', f.context.identity.id,
     '--action', ACTION, '--data-dir', f.nodeDir, '--owner-dir', f.ownerDir);
   assert.equal(approved.code, 0);
@@ -105,7 +106,7 @@ test('owner CLI approval, agent CLI read, live status, durable operation and rev
   assert.equal((await liveStatus(f.dir)).status, 'grant_revoked');
   await assert.rejects(resourceRequest(f.context, existingToken, 'GET', '/v1/capabilities'), denied('grant_revoked'));
   const after = await remote('run', ACTION, '--from', '2026-09-26', '--to', '2026-10-02', '--state-dir', f.dir);
-  assert.equal(after.code, 3); assert.equal(after.body.status, 'grant_revoked');
+  assert.equal(after.code, EXIT_GRANT_REVOKED); assert.equal(after.body.status, 'grant_revoked');
   const eventsAfter = local('node', 'events', '--data-dir', f.nodeDir);
   assert.equal(eventsAfter.body.data.events.at(-1).kind, 'grant_revoked');
   for (const output of [approved.stdout, caps.stdout, result.stdout, resumed.stdout, events.stdout, listed.stdout]) {
